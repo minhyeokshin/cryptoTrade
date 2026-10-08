@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type pg from 'pg';
 import { FROZEN } from '../src/config/frozen.js';
 import { ShadowEngine } from '../src/shadow/shadow-engine.js';
-import { ShadowStateStore } from '../src/shadow/state-store.js';
+import { ShadowStateStore, validateRestoredState } from '../src/shadow/state-store.js';
 
 const activationId = '00000000-0000-4000-8000-000000000001';
 
@@ -53,5 +53,27 @@ describe('append-only Shadow journal restart contract', () => {
     const restarted = new ShadowEngine(0, 100, 1, recovered!.state);
     expect(restarted.consume(p, 300_001, 100, 100, true).status).toBe('DUPLICATE');
     expect(await store.persistTransition(activationId, result.entry!.signalId, 300_000, engine.state)).toBe('DUPLICATE');
+  });
+  it('rejects tampered position sizing, execution, and closed PnL on restore', () => {
+    const engine = new ShadowEngine(0, 100, 1);
+    const p = { decisionTimestamp: 300_000, featureCutoff: 300_000,
+      side: 'LONG' as const, confidence: .6, actionable: true, flipActionable: true,
+      modelHash: FROZEN.directionModelHash, featureSchemaHash: FROZEN.featureSchemaHash };
+    engine.consume(p, 300_001, 100, 100, true);
+    expect(validateRestoredState(engine.state, 0).open?.contracts).toBe(36);
+    expect(() => validateRestoredState({ ...engine.state,
+      open: { ...engine.state.open!, marginUsd: 25 } })).toThrow('Corrupt');
+    expect(() => validateRestoredState({ ...engine.state,
+      open: { ...engine.state.open!, executionEntry: 100 } })).toThrow('Corrupt');
+    expect(() => validateRestoredState({ ...engine.state,
+      processedSignals: ['frozen-direction-5m-flip-v1:BTCUSD:'] })).toThrow('Corrupt');
+
+    engine.consume({ ...p, decisionTimestamp: 600_000, featureCutoff: 600_000,
+      side: 'NO_ACTION', confidence: 0, actionable: false, flipActionable: false },
+    600_001, 110, 110, true);
+    expect(validateRestoredState(engine.state, 0).closed).toHaveLength(1);
+    const corrupt = structuredClone(engine.state);
+    corrupt.closed[0]!.netUsd += 1;
+    expect(() => validateRestoredState(corrupt)).toThrow('Corrupt');
   });
 });

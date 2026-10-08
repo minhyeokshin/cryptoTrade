@@ -11,4 +11,6 @@ The canonical writer is intentionally disabled in `main.ts`. The SQL repository 
 
 `MarketReadRepository` is a SELECT-only adapter for the dedicated Shadow peer role. It loads chronological canonical candles and source timestamps from the existing live schema, validates OHLC/trade bounds, and never updates historical rows. Its tests use an isolated query stub; real peer-role access and a persistent causal consumer remain unverified.
 
+Journal restore is fail-closed: a snapshot is rejected if position sizing, adverse execution price, closed inverse settlement, signal order, or activation boundary is inconsistent with the frozen strategy. This protects restart from accepting structurally valid but financially corrupt JSON. It is not a substitute for a live kill/restart exercise under the dedicated role.
+
 Gaps before a verified activation timestamp are not part of a new forward epoch. A disconnect or failed reconciliation must block new entries. Model mismatch, stale candles, or unknown DB state must fail closed. No private exchange client exists.

@@ -1,6 +1,7 @@
 import type pg from 'pg';
 import { FROZEN } from '../config/frozen.js';
-import type { ShadowState } from './shadow-engine.js';
+import { executionPrice } from './inverse-pnl.js';
+import type { ClosedPosition, Position, ShadowState } from './shadow-engine.js';
 
 type JournalRow = {
   id: string;
@@ -16,14 +17,70 @@ type JournalRow = {
 
 export interface RestoredShadow { activationId: string; lastSignalTimestamp: number | null; state: ShadowState; }
 
+function finitePositive(value: unknown): boolean { return typeof value === 'number' && Number.isFinite(value) && value > 0; }
+function finite(value: unknown): boolean { return typeof value === 'number' && Number.isFinite(value); }
+function near(actual: number, expected: number): boolean {
+  return Math.abs(actual - expected) <= Math.max(1e-10, Math.abs(expected) * 1e-10);
+}
+function validPosition(value: unknown, activationAt: number): value is Position {
+  if (!value || typeof value !== 'object') return false;
+  const p = value as Partial<Position>;
+  return typeof p.signalId === 'string' &&
+    (p.side === 'LONG' || p.side === 'SHORT') &&
+    Number.isSafeInteger(p.signalTimestamp) && p.signalTimestamp! >= activationAt &&
+    p.signalId === `${FROZEN.strategyVersion}:BTCUSD:${p.signalTimestamp}` &&
+    Number.isSafeInteger(p.entryAt) && p.entryAt! > p.signalTimestamp! &&
+    finite(p.confidence) && p.confidence! >= FROZEN.threshold && p.confidence! <= 1 &&
+    finitePositive(p.rawEntry) && finitePositive(p.executionEntry) &&
+    Number.isSafeInteger(p.contracts) && p.contracts! > 0 &&
+    finitePositive(p.equityBefore) && finitePositive(p.marginUsd) && finitePositive(p.notionalUsd) &&
+    near(p.executionEntry!, executionPrice(p.rawEntry!, p.side, true)) &&
+    near(p.marginUsd!, p.equityBefore! * FROZEN.allocationRate) &&
+    near(p.notionalUsd!, p.marginUsd! * FROZEN.leverage) &&
+    p.contracts! <= p.notionalUsd! &&
+    finite(p.mfeBtc) && p.mfeBtc! >= 0 && finite(p.maeBtc) && p.maeBtc! <= 0;
+}
+
+function validClosed(value: unknown, activationAt: number): value is ClosedPosition {
+  if (!validPosition(value, activationAt)) return false;
+  const p = value as ClosedPosition;
+  return Number.isSafeInteger(p.exitAt) && p.exitAt > p.entryAt &&
+    (p.exitReason === 'DIRECTION_FLIP' || p.exitReason === 'HORIZON') &&
+    finitePositive(p.rawExit) && finitePositive(p.executionExit) &&
+    near(p.executionExit, executionPrice(p.rawExit, p.side, false)) &&
+    finite(p.grossBtc) && finite(p.netBtc) && finite(p.netUsd) &&
+    finite(p.feesBtc) && p.feesBtc >= 0 && finite(p.slippageBtc) && p.slippageBtc >= 0 &&
+    near(p.netBtc, p.grossBtc - p.slippageBtc - p.feesBtc) &&
+    near(p.netUsd, p.netBtc * p.executionExit) &&
+    finitePositive(p.equityAfter) && finitePositive(p.peakEquity) &&
+    finite(p.drawdownPct) && p.drawdownPct >= 0 && p.drawdownPct <= 1;
+}
+
 export function validateRestoredState(raw: unknown, activationAt?: number): ShadowState {
   if (!raw || typeof raw !== 'object') throw new Error('Invalid Shadow snapshot');
   const value = raw as Partial<ShadowState>;
-  if (!Number.isFinite(value.activationAt) || (activationAt !== undefined && value.activationAt !== activationAt) ||
-      !Number.isFinite(value.balanceBtc) || !Number.isFinite(value.peakEquity) ||
-      !Number.isFinite(value.mdd) || !Array.isArray(value.closed) ||
-      !Array.isArray(value.processedSignals) || new Set(value.processedSignals).size !== value.processedSignals.length ||
-      (value.open !== null && (typeof value.open !== 'object' || !value.open))) {
+  if (!Number.isSafeInteger(value.activationAt) || value.activationAt! < 0 ||
+      (activationAt !== undefined && value.activationAt !== activationAt) ||
+      !finitePositive(value.balanceBtc) || !finitePositive(value.peakEquity) ||
+      !finite(value.mdd) || value.mdd! < 0 || value.mdd! > 1 ||
+      !Array.isArray(value.closed) || !Array.isArray(value.processedSignals) ||
+      !value.processedSignals.every((id) => {
+        if (typeof id !== 'string') return false;
+        const prefix = `${FROZEN.strategyVersion}:BTCUSD:`;
+        const suffix = id.slice(prefix.length);
+        return id.startsWith(prefix) && /^\d+$/.test(suffix) &&
+          Number.isSafeInteger(Number(suffix)) && Number(suffix) >= value.activationAt!;
+      }) ||
+      new Set(value.processedSignals).size !== value.processedSignals.length ||
+      !value.processedSignals.every((id, i) => i === 0 ||
+        Number(id.split(':').at(-1)) > Number(value.processedSignals![i - 1]!.split(':').at(-1))) ||
+      !value.closed.every((p) => validClosed(p, value.activationAt!)) ||
+      !value.closed.every((p, i) => i === 0 || p.exitAt >= value.closed![i - 1]!.exitAt) ||
+      (value.open !== null && !validPosition(value.open, value.activationAt!)) ||
+      (value.open !== null && value.closed.length > 0 &&
+        value.open!.entryAt < value.closed.at(-1)!.exitAt) ||
+      (value.open !== null && !value.processedSignals.includes(value.open!.signalId)) ||
+      value.closed.some((p) => !value.processedSignals!.includes(p.signalId))) {
     throw new Error('Corrupt Shadow snapshot');
   }
   return value as ShadowState;
@@ -33,7 +90,21 @@ function validateRow(row: JournalRow): ShadowState {
   if (row.model_hash !== FROZEN.directionModelHash ||
       row.feature_schema_hash !== FROZEN.featureSchemaHash ||
       row.strategy_version !== FROZEN.strategyVersion) throw new Error('Frozen journal hash/version mismatch');
-  return validateRestoredState(row.state_snapshot);
+  const state = validateRestoredState(row.state_snapshot);
+  if (row.event_type === 'ACTIVATION') {
+    if (row.signal_ms !== null || row.idempotency_key !== `activation:${row.activation_id}` ||
+        state.processedSignals.length || state.open || state.closed.length) {
+      throw new Error('Corrupt Shadow activation journal');
+    }
+  } else if (row.event_type === 'TRANSITION') {
+    const last = state.processedSignals.at(-1);
+    if (!last || row.idempotency_key !== `signal:${last}` ||
+        !Number.isSafeInteger(Number(row.signal_ms)) ||
+        Number(last.split(':').at(-1)) !== Number(row.signal_ms)) {
+      throw new Error('Corrupt Shadow transition journal');
+    }
+  } else throw new Error('Unknown Shadow journal event');
+  return state;
 }
 
 /** Database transaction is the sole commit point. The in-memory engine must be reloaded after any failed write. */
@@ -48,6 +119,7 @@ export class ShadowStateStore {
          FROM shadow_trading_v1.node_shadow_journal
         WHERE activation_id=$1::uuid ORDER BY id DESC LIMIT 1`, [activationId]);
     const row = result.rows[0];
+    if (row && row.activation_id !== activationId) throw new Error('Shadow activation ID mismatch');
     return row ? { activationId: row.activation_id,
       lastSignalTimestamp: row.signal_ms === null ? null : Number(row.signal_ms),
       state: validateRow(row) } : null;
@@ -59,7 +131,10 @@ export class ShadowStateStore {
 
   async persistTransition(activationId: string, signalId: string, signalTimestamp: number,
                           state: ShadowState): Promise<'COMMITTED' | 'DUPLICATE'> {
-    if (!state.processedSignals.includes(signalId)) throw new Error('Signal not present in snapshot');
+    if (state.processedSignals.at(-1) !== signalId ||
+        signalId !== `${FROZEN.strategyVersion}:BTCUSD:${signalTimestamp}`) {
+      throw new Error('Signal/timestamp not latest in snapshot');
+    }
     return this.append(activationId, `signal:${signalId}`, 'TRANSITION', signalTimestamp, state);
   }
 
