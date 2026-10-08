@@ -1,14 +1,16 @@
-import type { CanonicalTrade } from '../types/domain.js';
+import type { CanonicalTrade, FrozenPrediction } from '../types/domain.js';
 import type { MarketReadRepository } from '../db/repositories/market-read.js';
+import type { OperationalSourceSnapshot } from '../report/shadow-snapshot.js';
 import type { CausalPredictor } from './causal-driver.js';
 import type { ShadowJournal } from './shadow-coordinator.js';
 import { ShadowCoordinator } from './shadow-coordinator.js';
 import { ShadowMarketObserver } from './market-observer.js';
+import type { ShadowState } from './shadow-engine.js';
 
 export interface PublicMarketRuntime {
   start(): Promise<void>;
   stop(): void;
-  status(): { sourceFresh: boolean; integrityFault: boolean };
+  status(): { sourceFresh: boolean; integrityFault: boolean; latestTrade?: number | null };
   ws: {
     on(event: 'trade', listener: (trade: CanonicalTrade) => void): unknown;
     off(event: 'trade', listener: (trade: CanonicalTrade) => void): unknown;
@@ -36,8 +38,19 @@ export class ShadowPersistentRuntime {
   private faulted = false;
   private started = false;
   private stopping = false;
+  private coordinator: ShadowCoordinator | null = null;
+  private lastPrediction: FrozenPrediction | null = null;
+  private lastMark: number | null = null;
+  private lastPublicTrade: number | null = null;
   private readonly tradeListener = (trade: CanonicalTrade) => {
     if (!this.observer || this.faulted) return;
+    const price = Number(trade.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      this.fail(new Error('Invalid public execution observation'));
+      return;
+    }
+    this.lastMark = price;
+    this.lastPublicTrade = trade.timestamp;
     void this.observer
       .onPublicTrade(trade)
       .catch((error: unknown) => this.fail(error));
@@ -86,6 +99,7 @@ export class ShadowPersistentRuntime {
       const mark = Number(latest.at(-1)?.close);
       if (!Number.isFinite(mark) || mark <= 0)
         throw new Error('Public canonical initial mark unavailable');
+      this.lastMark = mark;
       const coordinator = await ShadowCoordinator.resume(
         this.journal,
         this.activationId,
@@ -93,9 +107,15 @@ export class ShadowPersistentRuntime {
         mark,
         this.lotSize,
       );
+      this.coordinator = coordinator;
+      const predictor: CausalPredictor = { predict: async (candles, decisionTimestamp) => {
+        const prediction = await this.model.predict(candles, decisionTimestamp);
+        this.lastPrediction = prediction;
+        return prediction;
+      } };
       const observer = new ShadowMarketObserver(
         this.reader,
-        this.model,
+        predictor,
         coordinator,
         restored.state.activationAt,
         () => this.publicStreamReady(),
@@ -151,6 +171,8 @@ export class ShadowPersistentRuntime {
     this.onFault(error);
   }
 
+  halt(error: unknown): void { this.fail(error); }
+
   status(): ShadowRuntimeStatus {
     const observation = this.observer?.status();
     return {
@@ -164,5 +186,12 @@ export class ShadowPersistentRuntime {
       lastCandle: observation?.cursor ?? null,
       pendingDecision: observation?.pendingDecision ?? null,
     };
+  }
+
+  committedState(): ShadowState | null { return this.coordinator?.snapshot() ?? null; }
+  latestSignal(): FrozenPrediction | null { return this.lastPrediction; }
+  reportSource(): OperationalSourceSnapshot {
+    return { latestTradeTimestamp: this.lastPublicTrade ?? this.publicMarket.status().latestTrade ?? null,
+      sourceFresh: this.status().sourceFresh, markPrice: this.lastMark };
   }
 }

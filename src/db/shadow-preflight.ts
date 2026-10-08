@@ -14,7 +14,7 @@ const LIVE_TABLES = [
   'bybit_live_candles_1m',
   'operational_health_events',
 ] as const;
-const JOURNAL = 'node_shadow_journal';
+const SHADOW_TABLES = ['node_shadow_journal', 'node_hourly_reports'] as const;
 
 /** Read-only catalog audit. Never SET ROLE: the connection must already be the peer-auth Shadow role. */
 export async function verifyShadowDbPreflight(pool: pg.Pool): Promise<void> {
@@ -56,14 +56,11 @@ export async function verifyShadowDbPreflight(pool: pg.Pool): Promise<void> {
       throw new Error(`Shadow market privilege mismatch: ${table}`);
     }
   }
-  const journal = byName.get(`shadow_trading_v1.${JOURNAL}`);
-  if (
-    !journal?.can_select ||
-    !journal.can_insert ||
-    journal.can_update ||
-    journal.can_delete
-  ) {
-    throw new Error('Shadow journal privilege mismatch');
+  for (const table of SHADOW_TABLES) {
+    const row = byName.get(`shadow_trading_v1.${table}`);
+    if (!row?.can_select || !row.can_insert || row.can_update || row.can_delete) {
+      throw new Error(`Shadow journal/report privilege mismatch: ${table}`);
+    }
   }
   for (const row of result.rows) {
     if (

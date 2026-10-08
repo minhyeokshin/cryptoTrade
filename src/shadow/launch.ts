@@ -2,11 +2,15 @@ import { isAbsolute, resolve } from 'node:path';
 import { userInfo } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { FROZEN } from '../config/frozen.js';
+import { PostgresHourlyClaim } from '../db/repositories/hourly.js';
 import { MarketReadRepository } from '../db/repositories/market-read.js';
 import { poolForRole } from '../db/postgres.js';
 import { verifyShadowDbPreflight } from '../db/shadow-preflight.js';
 import { FrozenModelClient } from '../inference/model-client.js';
 import { MarketRuntime } from '../market/market-runtime.js';
+import { HourlyScheduler } from '../report/hourly-scheduler.js';
+import { HourlyMailer, validateHourlyEnvironment } from '../report/mailer.js';
+import { ShadowSnapshotProvider } from '../report/shadow-snapshot.js';
 import { ShadowStateStore } from './state-store.js';
 import { ShadowPersistentRuntime } from './persistent-runtime.js';
 
@@ -95,7 +99,9 @@ export async function launchRestoredShadow(): Promise<void> {
   validateShadowRuntimeApproval(
     JSON.parse(await readFile(config.policyApprovalPath, 'utf8')) as unknown,
   );
+  validateHourlyEnvironment(process.env);
   const pool = poolForRole('bybit_shadow');
+  const mailer = new HourlyMailer(new PostgresHourlyClaim(pool));
   const modelFile = resolve(
     config.researchRoot,
     'reports/predictability_bybit_direction_exit_v1/direction_5m.joblib',
@@ -105,6 +111,7 @@ export async function launchRestoredShadow(): Promise<void> {
     resolve(process.cwd(), 'python/frozen_inference_worker.py'),
     modelFile,
   );
+  let hourly: HourlyScheduler | null = null;
   const runtime = new ShadowPersistentRuntime(
     new MarketRuntime('DRY_RUN'),
     new MarketReadRepository(pool),
@@ -114,6 +121,7 @@ export async function launchRestoredShadow(): Promise<void> {
     config.lotSize,
     () => verifyShadowDbPreflight(pool),
     () => {
+      hourly?.stop();
       process.exitCode = 1;
       void pool.end().catch(() => {
         process.exitCode = 1;
@@ -121,12 +129,20 @@ export async function launchRestoredShadow(): Promise<void> {
     },
   );
   try {
+    await mailer.verifyConnection();
     await runtime.start();
+    hourly = new HourlyScheduler(new ShadowSnapshotProvider(
+      () => runtime.committedState(), () => runtime.reportSource(),
+      () => runtime.latestSignal()), mailer, (error) => runtime.halt(error));
+    hourly.start();
   } catch (error) {
+    hourly?.stop();
+    runtime.stop();
     await pool.end();
     throw error;
   }
   const shutdown = () => {
+    hourly?.stop();
     runtime.stop();
     void pool.end().catch(() => {
       process.exitCode = 1;

@@ -35,6 +35,14 @@ const allowed = [
     can_update: false,
     can_delete: false,
   },
+  {
+    schema_name: 'shadow_trading_v1',
+    table_name: 'node_hourly_reports',
+    can_select: true,
+    can_insert: true,
+    can_update: false,
+    can_delete: false,
+  },
 ];
 
 function pool(user: string, rows = allowed): pg.Pool {
@@ -84,12 +92,12 @@ describe('Shadow DB preflight', () => {
   it('rejects missing journal grants and mutation rights', async () => {
     await expect(
       verifyShadowDbPreflight(pool('bybit_shadow', allowed.slice(0, 3))),
-    ).rejects.toThrow('journal privilege');
+    ).rejects.toThrow('journal/report privilege');
     const mutation = allowed.map((x) =>
       x.table_name === 'node_shadow_journal' ? { ...x, can_update: true } : x,
     );
     await expect(
       verifyShadowDbPreflight(pool('bybit_shadow', mutation)),
-    ).rejects.toThrow('journal privilege');
+    ).rejects.toThrow('journal/report privilege');
   });
 });

@@ -106,10 +106,13 @@ describe('restore-only Shadow persistent runtime', () => {
     const first = makeRuntime();
     await first.start(0);
     expect(predictions).toBe(0);
+    expect(first.committedState()?.activationAt).toBe(activationAt);
+    expect(first.reportSource()).toMatchObject({ markPrice: 100, sourceFresh: true });
     clock = decision + 1000;
     latest = decision;
     expect(await first.pollOnce()).toEqual(['NO_ACTION_RECORDED']);
     expect(writes).toBe(1);
+    expect(first.latestSignal()?.side).toBe('NO_ACTION');
     first.stop();
 
     clock = decision + 2000;
