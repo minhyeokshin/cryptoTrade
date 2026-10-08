@@ -66,4 +66,25 @@ describe('causal live Shadow decision driver', () => {
     expect(driver.status().pendingDecision).toBeNull();
     expect(writes).toBe(1);
   });
+  it('does not commit or pend a signal if source readiness is lost during inference', async () => {
+    const activationAt = decision - 1000;
+    const state = new ShadowEngine(activationAt, 100, 1).state;
+    let fresh = true;
+    let writes = 0;
+    const driver = new CausalShadowDriver(activationAt, decision - 500,
+      { predict: async (_rows, end) => {
+        fresh = false;
+        return { decisionTimestamp: end, featureCutoff: end, side: 'LONG', confidence: .6,
+          actionable: true, flipActionable: true, modelHash: FROZEN.directionModelHash,
+          featureSchemaHash: FROZEN.featureSchemaHash };
+      } },
+      { snapshot: () => state, process: async () => { writes++;
+        return { status: 'ENTRY', entry: true, exit: false }; } },
+      () => fresh, () => decision + 1000);
+    driver.seedWarmup(Array.from({ length: 11_999 }, (_, i) =>
+      candle(decision - (11_999 - i) * minute)));
+    await expect(driver.onFinalizedCandle(candle(decision))).rejects.toThrow('lost readiness');
+    expect(writes).toBe(0);
+    expect(driver.status()).toMatchObject({ pendingDecision: null, faulted: true });
+  });
 });

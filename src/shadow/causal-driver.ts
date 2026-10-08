@@ -73,6 +73,8 @@ export class CausalShadowDriver {
       if (prediction.decisionTimestamp !== candle.end || prediction.featureCutoff > candle.end) {
         throw new Error('Noncausal inference response');
       }
+      // A disconnect or supervised stop can happen while the frozen worker is computing.
+      if (!this.sourceFresh()) throw new Error('Source lost readiness during frozen inference');
       const actionable = prediction.side !== 'NO_ACTION' && prediction.confidence >= FROZEN.threshold;
       const requiresExecution = action === 'HORIZON_AND_ENTRY_DECISION' ||
         (action === 'ENTRY_DECISION' && actionable && prediction.actionable) ||

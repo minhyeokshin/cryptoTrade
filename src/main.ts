@@ -2,6 +2,7 @@ import { assertFrozenEnvironment } from './config/frozen.js';
 import { makeApp } from './app.js';
 import { MarketRuntime } from './market/market-runtime.js';
 import type { RuntimeView } from './api/routes/health.js';
+import { launchRestoredShadow } from './shadow/launch.js';
 
 assertFrozenEnvironment(process.env);
 const role = process.env.RUNTIME_ROLE ?? 'api';
@@ -14,7 +15,7 @@ if (role === 'producer') {
   await market.start();
   process.on('SIGTERM', () => market.stop());
 } else if (role === 'shadow') {
-  throw new Error('Shadow start blocked: Python model parity and persistent DB restart gate not verified');
+  await launchRestoredShadow();
 } else if (role === 'api' || role === 'api_probe') {
   // API probe is public-market DRY_RUN only; it neither opens a DB writer nor starts inference/Shadow.
   const market = role === 'api_probe' ? new MarketRuntime('DRY_RUN') : null;
