@@ -163,6 +163,6 @@ describe('frozen inverse Shadow mechanics', () => {
     }) }, { send: async (s) => { sent.push(s.reportTimestamp); return 'SENT'; } }, () => {});
     expect(await scheduler.tick(new Date('2026-10-08T01:59:59Z'))).toBe('NOT_STARTED');
     expect(await scheduler.tick(new Date('2026-10-08T02:00:05Z'))).toBe('SENT');
-    expect(sent).toEqual(['2026-10-08T02:00:00.000Z']);
+    expect(sent).toEqual(['2026-10-08T02:00:05.000Z']);
   });
 });

@@ -20,9 +20,9 @@ export class HourlyScheduler {
     try {
       const hour = new Date(now);
       hour.setUTCMinutes(0, 0, 0);
-      const snapshot = await this.provider.snapshot(hour);
+      const snapshot = await this.provider.snapshot(now);
       if (!snapshot.startTimestamp || Date.parse(snapshot.startTimestamp) >= hour.getTime()) return 'NOT_STARTED';
-      return this.sender.send({ ...snapshot, reportTimestamp: hour.toISOString() });
+      return this.sender.send({ ...snapshot, reportTimestamp: now.toISOString() });
     } finally { this.busy = false; }
   }
 }
