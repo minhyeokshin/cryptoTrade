@@ -1,5 +1,7 @@
 # Node Epoch V2 approval precheck — read-only, pending DB comparison
 
+Update: the operator later supplied a 3/3 exact OHLCV and `rawAggregation=true` audit. See [the candle audit review](node_epoch_v2_candle_audit_review.md) for the remaining `openChain=false` investigation and revised forensic-only rerun. The historical snapshot below is retained for provenance.
+
 As of this audit, both producer services were `inactive` and `disabled`. No service start or canonical mutation was performed. The operator supplied the old Node tail (`944d1e11-80f8-5560-a97b-d14d93a252d0`, `2026-10-08T07:02:54.737Z`, sequence `118887018575`), last candle `2026-10-08T07:03:00Z`, 1,000/1,000 unique sampled trades, 20/20 unique sampled candle timestamps, and an OPEN prior gap. These are operator-confirmed, but their full query output was not available in this session.
 
 ## Official Bybit 1m kline evidence

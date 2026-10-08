@@ -4,6 +4,8 @@ import { userInfo } from 'node:os';
 import { Decimal } from 'decimal.js';
 import { poolForReadOnlyRole } from './db/postgres.js';
 import { officialOneMinute } from './market/bybit-rest.js';
+import { officialOhlcvMatches, rawAggregationMatches, verifyOpenChain,
+  type AuditCandle } from './market/epoch-candle-audit.js';
 
 if (userInfo().username !== 'bybit_producer') throw new Error('bybit_producer OS user required');
 const old = JSON.parse(readFileSync('reports/runtime/node_new_live_epoch_approval_v1.json', 'utf8')) as Record<string, unknown>;
@@ -51,29 +53,28 @@ try {
     const official = await officialOneMinute(end);
     const row = db.rows[0];
     const aggregate = raw.rows[0];
-    const klineExact = !!row && (['open', 'high', 'low', 'close', 'volume'] as const)
-      .every((field) => eq(row[field], official[field]));
+    const canonical: AuditCandle | null = row ? { end, ...row,
+      tradeCount: Number(row.trade_count) } : null;
+    const klineExact = !!canonical && officialOhlcvMatches(canonical, official);
     // Open includes previous close in the frozen builder. High/low therefore include the
     // stored open; close within a tied last group needs original WS batch-order evidence.
-    const rawAggregateMatch = !!row && !!aggregate && aggregate.volume !== null &&
-      aggregate.high !== null && aggregate.low !== null &&
-      row.trade_count === aggregate.trades && eq(row.volume, aggregate.volume) &&
-      eq(row.high, Decimal.max(row.open, aggregate.high).toString()) &&
-      eq(row.low, Decimal.min(row.open, aggregate.low).toString());
+    const rawAggregateMatch = !!canonical && !!aggregate && rawAggregationMatches(canonical,
+      { tradeCount: Number(aggregate.trades), volume: aggregate.volume,
+        minPrice: aggregate.low, maxPrice: aggregate.high });
     const lastGroup = aggregate?.last_timestamp ? await pool.query<{ distinct_prices: string; prices: string[] }>(
       `SELECT count(DISTINCT price)::text AS distinct_prices,array_agg(DISTINCT price::text) AS prices
          FROM bybit_live.bybit_live_trades WHERE exchange_timestamp=$1`,
       [aggregate.last_timestamp]) : null;
     const closeOrderProvable = lastGroup?.rows[0]?.distinct_prices === '1';
-    const rawCloseMatch = closeOrderProvable && !!row &&
-      lastGroup!.rows[0]!.prices.some((price) => eq(price, row.close));
+    const rawCloseMatch = aggregate?.trades === '0' ? !!row && eq(row.close, row.open) :
+      closeOrderProvable && !!row && lastGroup!.rows[0]!.prices.some((price) => eq(price, row.close));
     results.push({ candleEnd: iso, db: row ?? null, official,
       raw: aggregate ?? null, lastTimestampGroup: lastGroup?.rows[0] ?? null,
       klineExact, rawAggregateMatch, closeOrderProvable, rawCloseMatch });
   }
   const boundaries = await pool.query<{ approval_id: string; historical_source_gap: string;
-    gap_start: Date; gap_end: Date }>(
-    `SELECT approval_id::text,historical_source_gap,gap_start,gap_end
+    gap_start: Date; gap_end: Date; first_complete_minute_start: Date }>(
+    `SELECT approval_id::text,historical_source_gap,gap_start,gap_end,first_complete_minute_start
        FROM bybit_live.node_live_epoch_boundaries
       WHERE approval_id=$1::uuid OR approval_id=$2::uuid`, [old.approval_id, pending.approval_id]);
   const samples = await pool.query<{ sample: string; rows: string; unique_rows: string }>(
@@ -97,15 +98,23 @@ try {
     row.sample === 'candle_timestamps' && row.rows === '20');
   const klineParity = lastCandleMatch && results.every((row) => row.klineExact);
   const rawAggregation = results.every((row) => row.rawAggregateMatch && row.rawCloseMatch);
-  const openChain = !!preceding.rows[0] && results.every((row, index) => !!row.db &&
-    eq(row.db.open, index === 0 ? preceding.rows[0]!.close : results[index - 1]!.db!.close));
+  const predecessorEnd = Date.parse(ends[0]!) - 60_000;
+  const officialPredecessor = await officialOneMinute(predecessorEnd);
+  const openChainCheck = verifyOpenChain(results.filter((row) => row.db).map((row) => ({
+    end: Date.parse(row.candleEnd), ...row.db!, tradeCount: Number(row.db!.trade_count) })),
+  preceding.rows[0] ? { end: predecessorEnd, close: preceding.rows[0].close } : null,
+  oldGap ? oldGap.first_complete_minute_start.getTime() : null,
+  { end: predecessorEnd, close: officialPredecessor.close });
+  const openChain = results.length === 3 && results.every((row) => row.db) && openChainCheck.pass;
   const oldEpochIntegrity = lastDbTradeMatch && klineParity && rawAggregation && !!oldGap &&
     uniqueSamples && openChain;
   process.stdout.write(`${JSON.stringify({ readOnly: true, canonicalWrites: 0,
     lastDbTradeMatch, lastCandleMatch, klineParity, rawAggregation,
     oldGapRecord: !!oldGap, oldGap: oldGap ?? null,
     approvalIdDistinct, expectedGapStartMatch, pendingApproval: true, v2AlreadyUsed,
-    canonicalSamples: samples.rows, uniqueSamples, openChain,
+    canonicalSamples: samples.rows, uniqueSamples, openChain, openChainCheck,
+    precedingDbCandle: preceding.rows[0] ?? null,
+    officialPredecessorClose: officialPredecessor.close,
     oldEpochIntegrity, newEpochV2ApprovalReady: oldEpochIntegrity && approvalIdDistinct &&
       expectedGapStartMatch && !v2AlreadyUsed,
     anchor: anchor ?? null, lastCandle: lastCandle.rows[0] ?? null,
