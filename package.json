@@ -1,0 +1,37 @@
+{
+  "name": "crypto-trade-forward-shadow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src test",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "decimal.js": "^10.6.0",
+    "fastify": "^5.0.0",
+    "nodemailer": "^10.0.16",
+    "pg": "^8.13.0",
+    "ws": "^8.18.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^22.0.0",
+    "@types/nodemailer": "^7.0.0",
+    "@types/pg": "^8.11.0",
+    "@types/ws": "^8.5.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^5.0.3"
+  }
+}
