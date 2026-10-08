@@ -8,6 +8,8 @@ The original research, model and canonical source remain in `btcMarketData`. Thi
 
 The public WebSocket and REST-overlap reader, candle builder, inverse-PnL engine, Python inference adapter, API skeleton and tests are implemented. The Node writer remains forcibly disabled, the Shadow role refuses to start, and the API explicitly reports `NOT_DEPLOYED`. Persistent database state recovery, reconnect gap reconciliation, complete Python candle/feature parity, contract rounding/liquidation verification, and live restart tests remain required. Do not mistake a successful build for operational readiness.
 
+Append-only Shadow state-journal and hourly UTC scheduler code are prepared but neither database migration nor mail delivery has been activated. They must be reviewed and exercised under the dedicated peer-auth Shadow role before an operational readiness claim.
+
 ## Development
 
 ```sh

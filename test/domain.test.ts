@@ -8,6 +8,8 @@ import { ShadowEngine } from '../src/shadow/shadow-engine.js';
 import { DrawdownTracker } from '../src/shadow/drawdown.js';
 import { tradeMetrics } from '../src/shadow/metrics.js';
 import { formatHourlyReport } from '../src/report/hourly-report.js';
+import { HourlyScheduler } from '../src/report/hourly-scheduler.js';
+import { validateRestoredState } from '../src/shadow/state-store.js';
 import { assertCausalCandles } from '../src/inference/feature-builder.js';
 import type { CanonicalCandle, FrozenPrediction } from '../src/types/domain.js';
 
@@ -103,6 +105,8 @@ describe('frozen inverse Shadow mechanics', () => {
     const restored = new ShadowEngine(0, 100, 1, structuredClone(e.state));
     expect(restored.state.open?.side).toBe('LONG');
     expect(restored.consume(prediction(300_000, 'LONG'), 300_001, 100, 100, true).status).toBe('DUPLICATE');
+    expect(validateRestoredState(restored.state, 0).open?.side).toBe('LONG');
+    expect(() => validateRestoredState({ ...restored.state, processedSignals: ['x', 'x'] })).toThrow();
   });
   it('computes MDD, PF, expectancy and losing streak', () => {
     const d = new DrawdownTracker(100); d.observe(110); d.observe(88);
@@ -121,5 +125,20 @@ describe('frozen inverse Shadow mechanics', () => {
       sourceLastTradeTimestamp: null, sourceFreshness: false, processUptimeSeconds: 3600 });
     expect(text).toContain('TOTAL_TRADES=0'); expect(text).toContain('ACTUAL_ORDERS=0');
     expect(text).toContain('PRIVATE_API_CALLS=0');
+  });
+  it('schedules a zero-trade heartbeat only after activation and rounds to UTC hour', async () => {
+    const sent: string[] = [];
+    const scheduler = new HourlyScheduler({ snapshot: async () => ({
+      reportTimestamp: '', startTimestamp: '2026-10-08T01:30:00Z', currentEquity: 100,
+      totalTrades: 0, wins: 0, losses: 0, winRate: null, profitFactor: null,
+      expectancy: null, netPnl: 0, returnPct: 0, currentDrawdown: 0, mdd: 0,
+      maxConsecutiveLosses: 0, openPosition: false, openPositionSide: null,
+      openPositionEntry: null, openPositionUnrealizedPnl: null, latestSignal: null,
+      latestConfidence: null, sourceLastTradeTimestamp: null, sourceFreshness: false,
+      processUptimeSeconds: 1,
+    }) }, { send: async (s) => { sent.push(s.reportTimestamp); return 'SENT'; } }, () => {});
+    expect(await scheduler.tick(new Date('2026-10-08T01:59:59Z'))).toBe('NOT_STARTED');
+    expect(await scheduler.tick(new Date('2026-10-08T02:00:05Z'))).toBe('SENT');
+    expect(sent).toEqual(['2026-10-08T02:00:00.000Z']);
   });
 });

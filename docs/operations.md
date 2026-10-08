@@ -5,3 +5,5 @@ Run verification using `npm run lint`, `npm run typecheck`, `npm test`, and `npm
 Public feeds: `wss://stream.bybit.com/v5/public/inverse` with `publicTrade.BTCUSD`, `kline.1.BTCUSD`, `kline.5.BTCUSD`; heartbeat is 20 seconds. No API keys. Local Python inference requires the original research environment/model path and hash verification. SMTP credentials, if ever configured, belong only in untracked runtime environment; do not put them in logs or git.
 
 Operational blockers: writer cutover, reconnect gap proof, source freshness soak, Python candle/feature parity, persistent Shadow journal/restart, verified inverse quantity/liquidation rules, hourly scheduler/mail idempotency, live API wiring. Until closed, `FORWARD_SHADOW_STARTED=FALSE`, actual orders and private API calls remain zero.
+
+The prepared hourly scheduler formats a zero-trade heartbeat and the database claim is at-most-once per UTC hour. It is not wired to a live snapshot provider. SMTP failure after claim cannot safely be retried without a reviewed delivery/outbox protocol; operators must inspect claimed-but-unsent hours. Do not mark hourly reporting operationally ready yet.
