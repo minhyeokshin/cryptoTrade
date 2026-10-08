@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { BybitPublicWs } from '../src/market/bybit-ws.js';
 import type { MarketRepository } from '../src/db/repositories/market.js';
@@ -40,6 +41,19 @@ class FakeWs extends EventEmitter {
 }
 
 describe('explicit current live epoch', () => {
+  it('keeps the distinct V3 template inert until separate human approval', () => {
+    const template = JSON.parse(readFileSync('reports/runtime/node_new_live_epoch_approval_v3.pending.json',
+      'utf8')) as Record<string, unknown>;
+    expect(template.approval_id).not.toBe('b6514764-b05a-4c9d-a845-9bc458aa9f96');
+    expect(template.previous_approval_id).toBe('b6514764-b05a-4c9d-a845-9bc458aa9f96');
+    expect(template.expected_gap_start).toBe('2026-10-08T08:32:59.332Z');
+    expect(template.approved_by_human).toBe(false);
+    expect(template.new_live_epoch_authorized).toBe(false);
+    expect(template.forward_shadow_may_start_after_new_epoch_health_pass).toBe(false);
+    expect(template.actual_orders_allowed).toBe(false);
+    expect(template.private_api_allowed).toBe(false);
+    expect(() => validateNewEpochApproval(template)).toThrow('approval invalid');
+  });
   it('accepts human-approved V2 for Producer even while Shadow remains unauthorized', () => {
     expect(validateNewEpochApproval(approval)).toMatchObject({
       new_live_epoch_authorized: true,

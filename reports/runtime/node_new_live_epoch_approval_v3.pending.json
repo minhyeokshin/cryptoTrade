@@ -1,0 +1,18 @@
+{
+  "policy": "NODE_CURRENT_LIVE_EPOCH",
+  "approval_status": "PENDING_HUMAN_APPROVAL",
+  "approval_id": "0f9b2760-fa13-47a0-bf7d-3a8c67902bf7",
+  "previous_approval_id": "b6514764-b05a-4c9d-a845-9bc458aa9f96",
+  "previous_epoch_id": "5767dba0-6453-408e-a331-0fc45fff7d18",
+  "approved_by_human": false,
+  "approved_at": null,
+  "expected_gap_start": "2026-10-08T08:32:59.332Z",
+  "expected_last_trade_id": "8fb3b0a4-71c2-50f5-8c27-fabc499b9b2f",
+  "expected_last_candle_end": "2026-10-08T08:33:00.000Z",
+  "historical_gap_may_remain_open": true,
+  "new_live_epoch_authorized": false,
+  "forward_shadow_may_start_after_new_epoch_health_pass": false,
+  "actual_orders_allowed": false,
+  "private_api_allowed": false,
+  "notes": "Template only. Two existing historical gaps remain OPEN. This file is invalid for runtime. Human operator must independently verify DB tail, migration 005, unused approval ID, writer exclusivity, complete dist parity and canary Restart=no before creating a separate approved artifact. No automatic new epoch or Shadow activation."
+}
