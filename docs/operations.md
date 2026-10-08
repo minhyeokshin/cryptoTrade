@@ -7,6 +7,8 @@ Public feeds: `wss://stream.bybit.com/v5/public/inverse` with `publicTrade.BTCUS
 
 Operational blockers: writer cutover, reconnect gap proof, source freshness soak, Python candle/feature parity, persistent Shadow journal/restart, verified inverse quantity/liquidation rules, hourly scheduler/mail idempotency, live API wiring. Until closed, `FORWARD_SHADOW_STARTED=FALSE`, actual orders and private API calls remain zero.
 
+After the reviewed journal migration is installed, an administrator may run the read-only dedicated-role check as the `bybit_shadow` OS user with `PGUSER=bybit_shadow npm run shadow:db-preflight` from the deployed runtime. It uses the local PostgreSQL socket and checks both session identity and catalog grants. It never activates Shadow or writes data. Do not run it with `btcuser`, TCP/password credentials, or before the DBA-approved migration.
+
 Reconnect recovery is deliberately narrow: public recent REST must still contain the exact trade immediately before disconnect and overlap the resumed public WS with matching IDs and canonical payloads. If not, the runtime stays blocked; an official historical archive or explicit new epoch procedure is required. Read-only unit tests do not count as a supervised disconnect/restart validation.
 Three unsuccessful bounded reconciliation attempts cause a hard integrity fault; the process does not silently mark itself healthy. A manual restart is not itself proof that the gap was recovered—the same anchor and official-source checks still apply. Payload conflicts, late trades and official candle mismatches also require investigation before cutover.
 
