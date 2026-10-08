@@ -26,6 +26,7 @@ Copy `.env.example` into an untracked local environment file only when needed. N
 
 `GET /health`, `/api/market/status`, `/api/shadow/status`, `/api/shadow/metrics`, and `/api/shadow/trades` return JSON. Until a supervised, verified runtime is attached, they report not deployed rather than fabricated live results.
 For a non-writing public-market API probe, set `RUNTIME_ROLE=api_probe` before running compiled `dist/main.js`; `/api/market/status` then reflects the in-memory DRY_RUN stream. It does not activate Shadow or canonical DB writes.
+The optional `RUNTIME_ROLE=api_shadow_readonly` runs under the `bybit_shadow` OS/peer role with `PGUSER=bybit_shadow` and an existing `SHADOW_ACTIVATION_ID`. It SELECTs the canonical source and append-only Shadow journal for API responses, but never creates an activation or writes data. Its `runtimeVerified=false` and `forwardShadowStarted=false` fields are deliberate: a journal record is not proof that a supervised engine is alive. This mode is not enabled by the PM2 template.
 
 Historical reference only: Development 221 trades, 59.28% win rate, PF 1.803; Validation 44 trades, 61.36% win rate, PF 2.679. These figures are not reproduced or optimized by this runtime.
 

@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 export interface RuntimeView {
-  health: () => unknown; market: () => unknown; shadow: () => unknown;
-  metrics: () => unknown; trades: () => unknown[];
+  health: () => unknown | Promise<unknown>; market: () => unknown | Promise<unknown>;
+  shadow: () => unknown | Promise<unknown>; metrics: () => unknown | Promise<unknown>;
+  trades: () => unknown[] | Promise<unknown[]>;
 }
 export function registerHealth(app: FastifyInstance, view: RuntimeView): void {
   app.get('/health', async () => view.health());
