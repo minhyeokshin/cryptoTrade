@@ -24,6 +24,7 @@ export class MarketRuntime {
   private integrityFault = false;
   private lastObserved: CanonicalTrade | null = null;
   private disconnectAnchor: CanonicalTrade | null = null;
+  private disconnectAnchorGroup: CanonicalTrade[] = [];
   private readonly resumedWs = new Map<string, CanonicalTrade>();
   private recoveredTrades = 0;
   private lastOverlap = 0;
@@ -48,7 +49,11 @@ export class MarketRuntime {
       catch (error) { this.fault(String(error)); }
     });
     this.ws.on('disconnected', () => {
-      if (this.anchor !== null && !this.disconnectAnchor) this.disconnectAnchor = this.lastObserved;
+      if (this.anchor !== null && !this.disconnectAnchor) {
+        this.disconnectAnchor = this.lastObserved;
+        this.disconnectAnchorGroup = this.lastObserved ?
+          [...this.buffer.values()].filter((trade) => trade.timestamp === this.lastObserved!.timestamp) : [];
+      }
       this.block('WebSocket disconnected; reconcile before resume');
     });
     this.ws.on('connected', () => { if (this.disconnectAnchor) this.scheduleReconcile(); });
@@ -78,6 +83,7 @@ export class MarketRuntime {
     const rest = await this.rest.recentTrades();
     const overlap = rest.filter((x) => this.buffer.has(x.id));
     if (!overlap.length || overlap.some((x) => !sameTrade(x, this.buffer.get(x.id)!))) throw new Error('REST/WS overlap mismatch');
+    this.lastOverlap = overlap.length;
     if (this.mode === 'WRITE') {
       const tail = await this.repository!.recoveryTail();
       const byId = new Map(rest.map((trade) => [trade.id, trade]));
@@ -85,7 +91,8 @@ export class MarketRuntime {
         const candidate = byId.get(trade.id);
         return !candidate || !sameTrade(candidate, trade);
       })) throw new Error('Persisted unfinalized trade/REST boundary mismatch');
-      const bridge = reconcileRecent(tail.lastTrade, rest, [...this.buffer.values()]);
+      const bridge = reconcileRecent(tail.lastTrade, rest, [...this.buffer.values()],
+        tail.anchorTimestampTrades);
       for (const trade of [...tail.unfinalizedTrades, ...bridge.recovered]) {
         const old = this.buffer.get(trade.id);
         if (old && !sameTrade(old, trade)) throw new Error('Canonical startup trade conflict');
@@ -151,7 +158,8 @@ export class MarketRuntime {
       if (this.integrityFault) throw new Error('Integrity fault requires supervised restart');
       const rest = await recentTrades();
       if (!this.ws.connected || this.builder.lateCount || this.integrityFault) throw new Error('Reconnect interrupted or integrity fault');
-      const result = reconcileRecent(this.disconnectAnchor, rest, [...this.resumedWs.values()]);
+      const result = reconcileRecent(this.disconnectAnchor, rest, [...this.resumedWs.values()],
+        this.disconnectAnchorGroup);
       for (const trade of result.recovered) {
         const old = this.buffer.get(trade.id);
         if (old && !sameTrade(old, trade)) throw new Error('Recovered trade conflicts with WS');
@@ -164,6 +172,7 @@ export class MarketRuntime {
       this.lastOverlap = result.overlap;
       this.reconcileAttempts = 0;
       this.disconnectAnchor = null;
+      this.disconnectAnchorGroup = [];
       this.resumedWs.clear();
       this.lastError = null;
       this.continuity = true;

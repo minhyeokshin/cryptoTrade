@@ -6,7 +6,8 @@ import type { ProducerLease } from '../producer-lease.js';
 export class MarketRepository {
   constructor(private readonly pool: pg.Pool, private readonly lease?: ProducerLease) {}
   async recoveryTail(): Promise<{ lastCandleEnd: number; previousClose: string;
-    lastTrade: CanonicalTrade; unfinalizedTrades: CanonicalTrade[] }> {
+    lastTrade: CanonicalTrade; anchorTimestampTrades: CanonicalTrade[];
+    unfinalizedTrades: CanonicalTrade[] }> {
     const client = this.lease?.client ?? await this.pool.connect();
     try {
       const candle = await client.query<{ end_ms: string; close: string }>(
@@ -28,6 +29,11 @@ export class MarketRepository {
           WHERE exchange_timestamp >= to_timestamp($1::double precision/1000)
           ORDER BY exchange_timestamp,raw_sequence NULLS LAST,trade_id LIMIT 1001`, [end]);
       if (recent.rows.length > 1000) throw new Error('Unfinalized canonical tail exceeds bounded recovery');
+      const sameTimestamp = await client.query<Row>(
+        `SELECT ${tradeColumns} FROM bybit_live.bybit_live_trades
+          WHERE exchange_timestamp = to_timestamp($1::double precision/1000)
+          ORDER BY raw_sequence NULLS LAST LIMIT 1001`, [tail.rows[0].timestamp_ms]);
+      if (sameTimestamp.rows.length > 1000) throw new Error('Anchor millisecond group exceeds bounded recovery');
       const normalize = (row: Row): CanonicalTrade => {
         const timestamp = Number(row.timestamp_ms);
         const receivedAt = Number(row.received_ms);
@@ -44,7 +50,8 @@ export class MarketRepository {
       if (!Number.isSafeInteger(end) || end % 60_000 !== 0 ||
           !new Decimal(candle.rows[0].close).gt(0)) throw new Error('Invalid canonical candle tail');
       return { lastCandleEnd: end, previousClose: candle.rows[0].close,
-        lastTrade: normalize(tail.rows[0]), unfinalizedTrades: recent.rows.map(normalize) };
+        lastTrade: normalize(tail.rows[0]), anchorTimestampTrades: sameTimestamp.rows.map(normalize),
+        unfinalizedTrades: recent.rows.map(normalize) };
     } finally { if (!this.lease) client.release(); }
   }
   async persist(candle: CanonicalCandle, trades: CanonicalTrade[],

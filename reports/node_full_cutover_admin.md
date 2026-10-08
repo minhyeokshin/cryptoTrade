@@ -1,7 +1,10 @@
 # Node-only producer cutover: staged administrator handoff
 
-Current read-only audit (2026-10-08): `bybit-producer.service` is **active and enabled**;
+Initial read-only audit (2026-10-08): `bybit-producer.service` was active and enabled;
 `ExecStart` is `/opt/btcMarketData-runtime/.venv/bin/python .../blind_capture_daemon.py --current-epoch`.
+After the failed first Node cutover, the Python rollback entered an `official OHLCV mismatch` restart
+loop. Treat it as **not healthy** until separately diagnosed; see
+`reports/node_equal_timestamp_reconciliation_incident.md`. The old Node binary must not be restarted.
 No service was stopped, disabled, installed, or started by Codex. Do not execute the stop/start phase until the
 reviewer accepts the Node code, database migration, Python→Node parity, and rollback plan.
 
@@ -83,6 +86,14 @@ sudo -u bybit_producer env RUNTIME_ROLE=producer NODE_MARKET_PRODUCER_MODE=DRY_R
 
 Timeout exit 124 is expected after a healthy bounded probe. Investigate any earlier error. Do not install a
 writer marker or start the Node writer while Python is running.
+
+Before a retry of the equal-millisecond incident, run the installed **read-only** DB/REST/WS
+forensic check under the producer peer role. Require `status=PASS`; the same-millisecond
+DB and REST groups must match exactly. This check needs no writer switch:
+
+```sh
+sudo -u bybit_producer env PGUSER=bybit_producer PGDATABASE=btc_analysis /usr/bin/node /opt/cryptoTrade-runtime/dist/producer-reconcile-forensics.js
+```
 
 ## D. Exclusive-writer transition (administrator only, approved maintenance window)
 

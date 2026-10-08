@@ -43,7 +43,10 @@ if (role === 'producer') {
   } else if (mode === 'DRY_RUN' || mode === 'READ_ONLY') {
     const market = new MarketRuntime(mode);
     await market.start();
-    process.on('SIGTERM', () => market.stop());
+    process.on('SIGTERM', () => {
+      process.stdout.write(`${JSON.stringify({ dryRunFinalStatus: market.status(), canonicalWrites: 0 })}\n`);
+      market.stop();
+    });
   } else {
     throw new Error('Unknown Node market producer mode');
   }
