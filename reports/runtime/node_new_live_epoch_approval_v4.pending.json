@@ -1,0 +1,19 @@
+{
+  "policy": "NODE_CURRENT_LIVE_EPOCH",
+  "approval_status": "PENDING_HUMAN_APPROVAL",
+  "approval_id": "5a3f2037-e6c5-451f-a34a-73051158aea5",
+  "previous_approval_id": "0f9b2760-fa13-47a0-bf7d-3a8c67902bf7",
+  "previous_epoch_id": "b2f1a6f4-c109-4c58-98ce-69bed75346ab",
+  "required_runtime_commit": "a5e0fdeed56ffa2ffbd4b9eeef9f4ec092ec7c1f",
+  "approved_by_human": false,
+  "approved_at": null,
+  "expected_gap_start": "2026-10-08T08:32:59.332Z",
+  "expected_last_trade_id": "8fb3b0a4-71c2-50f5-8c27-fabc499b9b2f",
+  "expected_last_candle_end": "2026-10-08T08:33:00.000Z",
+  "historical_gap_may_remain_open": true,
+  "new_live_epoch_authorized": false,
+  "forward_shadow_may_start_after_new_epoch_health_pass": false,
+  "actual_orders_allowed": false,
+  "private_api_allowed": false,
+  "notes": "PENDING template only. Three existing historical gaps remain OPEN. V3 approval is already used and V3 boundary remains unchanged. Recheck the exact DB trade ID/timestamp and candle, unused V4 ID, migration 005, whole-dist SHA/diff parity, single writer and Restart=no immediately before a separately human-approved start. Never backfill V2/V3 WS witnesses or auto-start Shadow."
+}

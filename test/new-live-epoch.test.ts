@@ -54,6 +54,23 @@ describe('explicit current live epoch', () => {
     expect(template.private_api_allowed).toBe(false);
     expect(() => validateNewEpochApproval(template)).toThrow('approval invalid');
   });
+  it('keeps V4 pending, distinct from used V3 and pinned to the verified old DB tail', () => {
+    const template = JSON.parse(readFileSync('reports/runtime/node_new_live_epoch_approval_v4.pending.json',
+      'utf8')) as Record<string, unknown>;
+    expect(template.approval_id).not.toBe('0f9b2760-fa13-47a0-bf7d-3a8c67902bf7');
+    expect(template.previous_approval_id).toBe('0f9b2760-fa13-47a0-bf7d-3a8c67902bf7');
+    expect(template.expected_gap_start).toBe('2026-10-08T08:32:59.332Z');
+    expect(template.expected_last_trade_id).toBe('8fb3b0a4-71c2-50f5-8c27-fabc499b9b2f');
+    expect(template.expected_last_candle_end).toBe('2026-10-08T08:33:00.000Z');
+    expect(template.required_runtime_commit).toBe('a5e0fdeed56ffa2ffbd4b9eeef9f4ec092ec7c1f');
+    expect(template.approved_by_human).toBe(false);
+    expect(template.new_live_epoch_authorized).toBe(false);
+    expect(template.forward_shadow_may_start_after_new_epoch_health_pass).toBe(false);
+    expect(template.actual_orders_allowed).toBe(false);
+    expect(template.private_api_allowed).toBe(false);
+    expect(() => validateNewEpochApproval(template)).toThrow('approval invalid');
+    expect(approvedStartupMode(true)).toBe('WRITE');
+  });
   it('accepts human-approved V2 for Producer even while Shadow remains unauthorized', () => {
     expect(validateNewEpochApproval(approval)).toMatchObject({
       new_live_epoch_authorized: true,
