@@ -10,7 +10,7 @@ import { tradeMetrics } from '../src/shadow/metrics.js';
 import { formatHourlyReport } from '../src/report/hourly-report.js';
 import { HourlyScheduler } from '../src/report/hourly-scheduler.js';
 import { validateRestoredState } from '../src/shadow/state-store.js';
-import { assertCausalCandles } from '../src/inference/feature-builder.js';
+import { assertCausalCandles, assertFiveMinuteEntryClock } from '../src/inference/feature-builder.js';
 import type { CanonicalCandle, FrozenPrediction } from '../src/types/domain.js';
 
 const raw = (time: string, id: string, price = '100') =>
@@ -60,6 +60,9 @@ describe('Python canonical market contract', () => {
     const c = (end: number): CanonicalCandle => ({ end, open: '1', high: '1', low: '1', close: '1',
       volume: '1', tradeCount: 1, firstTradeTimestamp: end - 1, lastTradeTimestamp: end - 1 });
     assertCausalCandles([c(240_000), c(300_000)], 300_000);
+    assertCausalCandles([c(300_000), c(360_000)], 360_000);
+    expect(() => assertFiveMinuteEntryClock(360_000)).toThrow();
+    assertFiveMinuteEntryClock(300_000);
     expect(() => assertCausalCandles([c(300_000), c(360_000)], 300_000)).toThrow();
   });
 });
@@ -92,12 +95,33 @@ describe('frozen inverse Shadow mechanics', () => {
     expect(second.entry).toBeNull();
     expect(e.state.closed).toHaveLength(1);
   });
+  it('uses the completed monitor minute, not delivery latency, to classify a flip', () => {
+    const e = new ShadowEngine(0, 100, 1);
+    e.consume(prediction(300_000, 'LONG'), 300_001, 100, 100, true);
+    const result = e.consume(prediction(540_000, 'SHORT'), 600_000, 110, 110, true);
+    expect(result.exit?.exitReason).toBe('DIRECTION_FLIP');
+  });
   it('uses five-minute horizon and disallows pre-activation signals', () => {
     const e = new ShadowEngine(1, 100, 1);
     expect(e.consume(prediction(0, 'LONG'), 2, 100, 100, true).status).toBe('PRE_ACTIVATION');
     e.consume(prediction(300_000, 'LONG'), 300_001, 100, 100, true);
     const result = e.consume(prediction(600_000, 'NO_ACTION', 0), 600_001, 100, 100, true);
     expect(result.exit?.exitReason).toBe('HORIZON');
+  });
+  it('rejects inconsistent frozen actionable flags', () => {
+    const e = new ShadowEngine(0, 100, 1);
+    expect(() => e.consume({ ...prediction(300_000, 'LONG'), actionable: false },
+      300_001, 100, 100, true)).toThrow('flags mismatch');
+  });
+  it('orders horizon exit before same-boundary actionable re-entry without overlap', () => {
+    const e = new ShadowEngine(0, 100, 1);
+    e.consume(prediction(300_000, 'LONG'), 300_001, 100, 100, true);
+    const result = e.consume(prediction(600_000, 'SHORT'), 600_001, 110, 110, true);
+    expect(result.status).toBe('EXIT_AND_ENTRY');
+    expect(result.exit?.exitReason).toBe('HORIZON');
+    expect(result.entry?.side).toBe('SHORT');
+    expect(e.state.closed).toHaveLength(1);
+    expect(e.state.open?.signalTimestamp).toBe(600_000);
   });
   it('restores position and processed signal state without re-entry', () => {
     const e = new ShadowEngine(0, 100, 1);

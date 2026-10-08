@@ -19,8 +19,12 @@ try {
       got.modelHash !== fixture.modelHash || got.featureSchemaHash !== fixture.featureSchemaHash) {
     throw new Error('Node/Python frozen prediction parity mismatch');
   }
+  if (process.env.PARITY_OFF_GRID === '1' && got.actionable) {
+    throw new Error('Off-grid minute must never create an entry signal');
+  }
   process.stdout.write(JSON.stringify({ sampleCandles: fixture.candles.length,
     decisionTimestamp: fixture.decisionTimestamp, sideMatch: true,
     confidenceAbsoluteError: error, modelHashMatch: true,
-    featureSchemaHashMatch: true }) + '\n');
+    featureSchemaHashMatch: true, actionable: got.actionable,
+    flipActionable: got.flipActionable }) + '\n');
 } finally { worker.stop(); }

@@ -46,25 +46,41 @@ export class ShadowEngine {
   consume(prediction: FrozenPrediction, executionAt: number, rawPrice: number, mark: number, sourceFresh: boolean): { entry: Position | null; exit: ClosedPosition | null; status: string } {
     if (!sourceFresh) return { entry: null, exit: null, status: 'SOURCE_BLOCKED' };
     if (prediction.modelHash !== FROZEN.directionModelHash || prediction.featureSchemaHash !== FROZEN.featureSchemaHash) throw new Error('Frozen hash mismatch');
+    if (prediction.decisionTimestamp % 60_000 !== 0) throw new Error('Non-minute prediction clock');
+    if (!Number.isFinite(prediction.confidence) || prediction.confidence < 0 || prediction.confidence > 1) {
+      throw new Error('Invalid frozen confidence');
+    }
+    const expectedFlip = prediction.side !== 'NO_ACTION' && prediction.confidence >= FROZEN.threshold;
+    const expectedEntry = expectedFlip && prediction.decisionTimestamp % FROZEN.horizonMs === 0;
+    if (prediction.flipActionable !== expectedFlip || prediction.actionable !== expectedEntry) {
+      throw new Error('Frozen actionable flags mismatch');
+    }
     if (prediction.featureCutoff > prediction.decisionTimestamp || prediction.decisionTimestamp >= executionAt) throw new Error('Future leakage/noncausal execution');
     if (prediction.decisionTimestamp < this.state.activationAt || executionAt <= this.state.activationAt) return { entry: null, exit: null, status: 'PRE_ACTIVATION' };
     if (executionAt - prediction.decisionTimestamp > 60_000) throw new Error('Execution observation too late');
     const id = signalId(prediction);
     if (this.seen.has(id)) return { entry: null, exit: null, status: 'DUPLICATE' };
     this.seen.add(id); this.state.processedSignals.push(id);
-    const actionable = prediction.side !== 'NO_ACTION' && prediction.confidence >= FROZEN.threshold;
+    const actionable = expectedFlip;
     const held = this.state.open;
     let exit: ClosedPosition | null = null;
     if (held) {
-      const horizon = executionAt >= held.signalTimestamp + FROZEN.horizonMs;
+      const elapsed = prediction.decisionTimestamp - held.signalTimestamp;
+      if (elapsed > FROZEN.horizonMs || elapsed <= 0 || elapsed % 60_000 !== 0) {
+        throw new Error('Missed/invalid frozen horizon monitor');
+      }
+      const horizon = elapsed === FROZEN.horizonMs;
       const flip = !horizon && actionable && prediction.flipActionable && prediction.side !== held.side;
       if (horizon || flip) exit = this.close(executionAt, rawPrice, mark, horizon ? 'HORIZON' : 'DIRECTION_FLIP');
     }
     let entry: Position | null = null;
-    if (!held && actionable && prediction.actionable && prediction.decisionTimestamp % (5 * 60_000) === 0) {
+    // Frozen historical ledger orders a horizon exit before a new 5m-grid entry at the same boundary.
+    // A flip on an off-grid minute never re-enters immediately.
+    if ((!held || exit?.exitReason === 'HORIZON') && actionable && prediction.actionable &&
+        prediction.decisionTimestamp % (5 * 60_000) === 0) {
       entry = this.open(id, prediction, executionAt, rawPrice, mark);
     }
-    return { entry, exit, status: entry ? 'ENTRY' : exit ? 'EXIT' : 'NO_ACTION' };
+    return { entry, exit, status: entry && exit ? 'EXIT_AND_ENTRY' : entry ? 'ENTRY' : exit ? 'EXIT' : 'NO_ACTION' };
   }
   private open(id: string, p: FrozenPrediction, at: number, raw: number, mark: number): Position | null {
     if (p.side === 'NO_ACTION') return null;

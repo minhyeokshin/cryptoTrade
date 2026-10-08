@@ -14,11 +14,14 @@ project = Path(__file__).resolve().parents[1]
 root = Path(os.environ['PYTHON_RESEARCH_ROOT']).resolve()
 source = root / 'reports/bybit_btcusd_validation/cache/candles.parquet'
 data = pd.read_parquet(source, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-sample = data.iloc[:15001].copy()
+off_grid = os.environ.get('PARITY_OFF_GRID') == '1'
+sample = data.iloc[:15002 if off_grid else 15001].copy()
 sample['timestamp'] = pd.to_datetime(sample.timestamp, utc=True)
 decision = int(sample.timestamp.iloc[-1].timestamp() * 1000)
-if decision % (5 * 60_000):
+if not off_grid and decision % (5 * 60_000):
     raise RuntimeError('sample not on 5m decision grid')
+if off_grid and decision % (5 * 60_000) == 0:
+    raise RuntimeError('sample unexpectedly on 5m grid')
 rows = [{**{key: str(item[key]) for key in ('open', 'high', 'low', 'close', 'volume')},
          'end': int(item['timestamp'].timestamp() * 1000)} for _, item in sample.iterrows()]
 env = {**os.environ, 'PYTHON_RESEARCH_ROOT': str(root), 'PYTHONDONTWRITEBYTECODE': '1'}
