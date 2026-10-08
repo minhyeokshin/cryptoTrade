@@ -50,4 +50,24 @@ describe('Shadow journal read-only API', () => {
       expect(reads).toBe(1);
     } finally { await app.close(); }
   });
+
+  it('withholds current marked equity and derived metrics when the canonical source is stale', async () => {
+    const market = fakeMarket();
+    market.sourceState = async () => ({ latestTrade: at - 600_000,
+      latestCandle: at - 600_000, latestCandleStatus: 'HEALTHY',
+      health: 'HEALTHY', healthAt: at - 600_000 });
+    const journal = { restore: async () => ({ activationId, lastSignalTimestamp: null,
+      state: { activationAt: at - 300_000, balanceBtc: 0.001, open: null, closed: [],
+        processedSignals: [], peakEquity: 100, mdd: 0 } }) } as Pick<ShadowStateStore, 'restore'>;
+    const app = makeApp(shadowDbView(market, journal, activationId, () => at));
+    try {
+      expect((await app.inject('/api/shadow/status')).json()).toMatchObject({
+        activationRecorded: true, databaseSourceFresh: false,
+        forwardShadowStarted: false, equity: null,
+      });
+      expect((await app.inject('/api/shadow/metrics')).json()).toMatchObject({
+        status: 'SOURCE_STALE', currentEquity: null, winRate: null,
+      });
+    } finally { await app.close(); }
+  });
 });
