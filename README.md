@@ -25,6 +25,7 @@ Copy `.env.example` into an untracked local environment file only when needed. N
 ## API
 
 `GET /health`, `/api/market/status`, `/api/shadow/status`, `/api/shadow/metrics`, and `/api/shadow/trades` return JSON. Until a supervised, verified runtime is attached, they report not deployed rather than fabricated live results.
+For a non-writing public-market API probe, set `RUNTIME_ROLE=api_probe` before running compiled `dist/main.js`; `/api/market/status` then reflects the in-memory DRY_RUN stream. It does not activate Shadow or canonical DB writes.
 
 Historical reference only: Development 221 trades, 59.28% win rate, PF 1.803; Validation 44 trades, 61.36% win rate, PF 2.679. These figures are not reproduced or optimized by this runtime.
 

@@ -26,7 +26,7 @@ worker = subprocess.run([sys.executable, str(project / 'python/frozen_inference_
                         input=json.dumps({'id': 1, 'candles': rows,
                                           'decisionTimestamp': decision}) + '\n',
                         text=True, capture_output=True, timeout=90, env=env, check=True)
-result = json.loads(worker.stdout.strip())
+result = json.loads(worker.stdout.strip().splitlines()[-1])
 if 'error' in result:
     raise RuntimeError(result['error'])
 sys.path.insert(0, str(root / 'scripts/bybit_live'))
@@ -46,6 +46,11 @@ if not np.isfinite(features).all():
 p = model_prob(artifact['model'], clean_eval(features[None, :], np.array([0]), artifact['transform']))[0]
 reference = dict(side=('SHORT', 'NO_ACTION', 'LONG')[int(np.argmax(p))], confidence=float(max(p)))
 got = result['prediction']
+if os.environ.get('PARITY_EXPORT_JSON') == '1':
+    print(json.dumps({'candles': rows, 'decisionTimestamp': decision,
+                      'reference': reference, 'modelHash': baseline['direction_model'],
+                      'featureSchemaHash': baseline['feature_schema_hash']}, separators=(',', ':')))
+    raise SystemExit(0)
 print(json.dumps({'sample_decision_utc': sample.timestamp.iloc[-1].isoformat(),
                   'sample_candles': len(sample), 'reference': reference,
                   'worker': {'side': got['side'], 'confidence': got['confidence']},

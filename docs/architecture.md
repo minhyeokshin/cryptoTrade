@@ -1,6 +1,7 @@
 # Architecture and boundaries
 
 `market` owns public BTCUSD inverse WebSocket parsing, public REST overlap, millisecond-truncated trade identity, and finalized trade-based candles. Official kline is a parity observation, not a replacement for canonical trade aggregation. `inference` isolates the original Python frozen model behind a long-running JSON-lines process. `shadow` contains pure inverse-contract execution and metrics logic. `api` and `report` are separate consumers.
+The Python worker emits an explicit ready/hash handshake only after loading the original frozen model. The Node client refuses prediction requests until that handshake succeeds and rejects a timeout, crash, malformed output, or hash mismatch.
 
 The canonical writer is intentionally disabled in `main.ts`. The SQL repository is a prepared implementation only: it is not a verified production migration or a license to dual-write with the Python producer. Database connections require local Unix socket/peer authentication and dedicated producer/shadow roles. Append-only unique identities and relevant timestamp indexes follow the project's PostgreSQL least-privilege design.
 

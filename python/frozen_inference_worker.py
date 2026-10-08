@@ -29,6 +29,10 @@ artifact = joblib.load(model_file)
 if artifact['feature_order'] != FEATURE_ORDER:
     raise RuntimeError('frozen feature order mismatch')
 minimum = warmup_dependency()['maximum_finite_rolling_minutes']
+sys.stdout.write(json.dumps({'id': 0, 'ready': True,
+                             'modelHash': baseline['direction_model'],
+                             'featureSchemaHash': baseline['feature_schema_hash']}) + '\n')
+sys.stdout.flush()
 
 
 def predict(request):

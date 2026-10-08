@@ -10,33 +10,57 @@ export class FrozenModelClient {
   private nextId = 0;
   private readonly pending = new Map<number, { resolve: (value: FrozenPrediction) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private lines = '';
+  private ready = false;
   constructor(private readonly python: string, private readonly worker: string, private readonly modelFile: string) {}
   async start(): Promise<void> {
+    if (this.child) throw new Error('Inference worker already started');
     const bytes = await readFile(this.modelFile);
     if (createHash('sha256').update(bytes).digest('hex') !== FROZEN.directionModelHash) throw new Error('Frozen Direction model hash mismatch');
     this.child = spawn(this.python, [this.worker], { stdio: ['pipe', 'pipe', 'pipe'],
       env: { PATH: process.env.PATH, PYTHON_RESEARCH_ROOT: process.env.PYTHON_RESEARCH_ROOT,
         PYTHONDONTWRITEBYTECODE: '1' } });
+    let resolveReady!: () => void;
+    let rejectReady!: (error: Error) => void;
+    const readyPromise = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    const readyTimer = setTimeout(() => {
+      rejectReady(new Error('Python inference readiness timeout')); this.child?.kill();
+    }, 30_000);
     this.child.stdout.on('data', (chunk: Buffer) => {
       this.lines += chunk.toString();
       for (;;) {
         const end = this.lines.indexOf('\n'); if (end < 0) break;
         const line = this.lines.slice(0, end); this.lines = this.lines.slice(end + 1);
-        const value = JSON.parse(line) as { id: number; prediction?: FrozenPrediction; error?: string };
+        let value: { id: number; ready?: boolean; modelHash?: string; featureSchemaHash?: string;
+          prediction?: FrozenPrediction; error?: string };
+        try { value = JSON.parse(line) as typeof value; }
+        catch { clearTimeout(readyTimer); rejectReady(new Error('Malformed inference worker output')); this.child?.kill(); return; }
+        if (value.id === 0) {
+          clearTimeout(readyTimer);
+          if (!value.ready || value.modelHash !== FROZEN.directionModelHash ||
+              value.featureSchemaHash !== FROZEN.featureSchemaHash) {
+            rejectReady(new Error('Frozen worker readiness/hash mismatch')); this.child?.kill();
+          } else { this.ready = true; resolveReady(); }
+          continue;
+        }
         const request = this.pending.get(value.id); if (!request) continue;
         clearTimeout(request.timer); this.pending.delete(value.id);
         if (value.error) request.reject(new Error(value.error));
         else if (value.prediction) request.resolve(value.prediction);
       }
     });
+    this.child.stderr.on('data', () => { /* drain stderr; never log model paths or environment */ });
+    this.child.on('error', (error: Error) => { clearTimeout(readyTimer); rejectReady(error); });
     this.child.on('exit', () => {
+      if (!this.ready) { clearTimeout(readyTimer); rejectReady(new Error('Python inference exited before readiness')); }
+      this.ready = false;
       for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error('Python inference exited')); }
       this.pending.clear(); this.child = null;
     });
+    await readyPromise;
   }
   predict(candles: CanonicalCandle[], decisionTimestamp: number): Promise<FrozenPrediction> {
     assertCausalCandles(candles, decisionTimestamp);
-    if (!this.child) throw new Error('Inference worker not ready');
+    if (!this.child || !this.ready) throw new Error('Inference worker not ready');
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Python inference timeout')); this.child?.kill(); }, 15_000);

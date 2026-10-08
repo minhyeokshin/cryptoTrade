@@ -1,6 +1,7 @@
 # Operations
 
-Run verification using `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`. `pm2 start ecosystem.config.cjs` launches only the loopback API, not a market writer or Shadow engine. `pm2 status`, `pm2 logs btc-shadow-node`, and `pm2 restart btc-shadow-node` operate on that API only. Producer and Shadow PM2 templates are not production activation commands.
+Run verification using `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`. `pm2 start ecosystem.config.cjs` launches only the loopback API, not a market writer or Shadow engine. `pm2 status`, `pm2 logs btc-shadow-api`, and `pm2 restart btc-shadow-api` operate on that API only. Producer and Shadow PM2 templates are not production activation commands.
+`RUNTIME_ROLE=api_probe node dist/main.js` is an optional loopback read-only public-market probe. Its health endpoint remains `not_ready`; it has no DB or inference/Shadow consumer. The default PM2 file deliberately does not enable this probe automatically.
 
 Public feeds: `wss://stream.bybit.com/v5/public/inverse` with `publicTrade.BTCUSD`, `kline.1.BTCUSD`, `kline.5.BTCUSD`; heartbeat is 20 seconds. No API keys. Local Python inference requires the original research environment/model path and hash verification. SMTP credentials, if ever configured, belong only in untracked runtime environment; do not put them in logs or git.
 
