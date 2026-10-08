@@ -9,7 +9,8 @@ export interface NewEpochApproval {
   expected_gap_start: string;
   historical_gap_may_remain_open: true;
   new_live_epoch_authorized: true;
-  forward_shadow_may_start_after_new_epoch_health_pass: true;
+  /** Informational only for this producer approval; Shadow has a separate gate. */
+  forward_shadow_may_start_after_new_epoch_health_pass: boolean;
   actual_orders_allowed: false;
   private_api_allowed: false;
 }
@@ -31,7 +32,7 @@ export function validateNewEpochApproval(input: unknown): NewEpochApproval {
       !Number.isFinite(Date.parse(x.expected_gap_start)) ||
       x.historical_gap_may_remain_open !== true ||
       x.new_live_epoch_authorized !== true ||
-      x.forward_shadow_may_start_after_new_epoch_health_pass !== true ||
+      typeof x.forward_shadow_may_start_after_new_epoch_health_pass !== 'boolean' ||
       x.actual_orders_allowed !== false || x.private_api_allowed !== false) {
     throw new Error('New live epoch approval invalid');
   }

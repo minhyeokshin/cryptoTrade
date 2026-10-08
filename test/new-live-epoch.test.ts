@@ -20,7 +20,7 @@ const approval = { policy: 'NODE_CURRENT_LIVE_EPOCH',
   approved_by_human: true, approved_at: '2026-10-08T08:00:00Z',
   expected_gap_start: '2026-10-08T05:55:50.099Z',
   historical_gap_may_remain_open: true, new_live_epoch_authorized: true,
-  forward_shadow_may_start_after_new_epoch_health_pass: true,
+  forward_shadow_may_start_after_new_epoch_health_pass: false,
   actual_orders_allowed: false, private_api_allowed: false };
 
 class FakeWs extends EventEmitter {
@@ -40,11 +40,21 @@ class FakeWs extends EventEmitter {
 }
 
 describe('explicit current live epoch', () => {
+  it('accepts human-approved V2 for Producer even while Shadow remains unauthorized', () => {
+    expect(validateNewEpochApproval(approval)).toMatchObject({
+      new_live_epoch_authorized: true,
+      forward_shadow_may_start_after_new_epoch_health_pass: false,
+    });
+    expect(validateNewEpochApproval({ ...approval,
+      forward_shadow_may_start_after_new_epoch_health_pass: true }).approval_id)
+      .toBe(approval.approval_id);
+  });
   it('preserves OPEN gap and rejects implicit or unsafe approval', () => {
     expect(validateNewEpochApproval(approval)).toEqual(approval);
     expect(() => validateNewEpochApproval({ ...approval, new_live_epoch_authorized: false })).toThrow();
     expect(() => validateNewEpochApproval({ ...approval, historical_gap_may_remain_open: false })).toThrow();
     expect(() => validateNewEpochApproval({ ...approval, actual_orders_allowed: true })).toThrow();
+    expect(() => validateNewEpochApproval({ ...approval, private_api_allowed: true })).toThrow();
     expect(() => validateNewEpochApproval({ ...approval, approved_by_human: false })).toThrow();
     expect(() => validateNewEpochApproval({ ...approval, previous_approval_id: approval.approval_id })).toThrow();
     expect(() => validateNewEpochApproval({ ...approval, approved_at: 'PENDING' })).toThrow();
@@ -52,9 +62,31 @@ describe('explicit current live epoch', () => {
       new_live_epoch_authorized: false })).toThrow();
     expect(() => validateNewEpochApproval({ ...approval, previous_approval_id: undefined }))
       .toThrow();
+    expect(() => validateNewEpochApproval({ ...approval,
+      forward_shadow_may_start_after_new_epoch_health_pass: undefined })).toThrow();
     expect(() => new MarketRuntime('NEW_LIVE_EPOCH', {} as MarketRepository)).toThrow('approval');
     expect(approvedStartupMode(false)).toBe('NEW_LIVE_EPOCH');
     expect(approvedStartupMode(true)).toBe('WRITE');
+  });
+  it('fails closed before a new boundary if the expected DB tail changed', async () => {
+    const ws = new FakeWs();
+    const record = vi.fn();
+    const persist = vi.fn();
+    const repo = { historicalGapStart: async () => gap + 1, persist,
+      recordFailure: async () => {} } as unknown as MarketRepository;
+    const runtime = new MarketRuntime('NEW_LIVE_EPOCH', repo, ws as unknown as BybitPublicWs,
+      { recentTrades: async () => [trade('ws-before-boundary')],
+        officialOneMinute: async (end) => ({ end, open: '1', high: '1', low: '1',
+          close: '1', volume: '0', tradeCount: 0,
+          firstTradeTimestamp: null, lastTradeTimestamp: null }) }, undefined,
+      { expectedGapStart: gap, record });
+    await expect(runtime.start()).rejects.toThrow('Historical gap start changed');
+    expect(record).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
+  });
+  it('never converts a used approval ID into a second new live epoch', () => {
+    expect(approvedStartupMode(true)).toBe('WRITE');
+    expect(approvedStartupMode(true)).not.toBe('NEW_LIVE_EPOCH');
   });
   it('does not confuse the previous OPEN gap with a newly approved gap', () => {
     expect(validateNewEpochApproval(approval).expected_gap_start).toBe('2026-10-08T05:55:50.099Z');
