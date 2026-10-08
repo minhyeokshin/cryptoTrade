@@ -10,6 +10,20 @@ export interface Reconciliation {
   anchorTimestamp: number;
   latestTimestamp: number;
 }
+export interface FailingSequenceGroup {
+  timestamp: number;
+  sequence: number;
+  restTrades: Array<Pick<CanonicalTrade, 'id' | 'timestamp' | 'sequence' | 'price' | 'size' | 'side'>>;
+  wsTradeIds: string[];
+  missingWsTradeIds: string[];
+}
+export class ReconciliationEvidenceError extends Error {
+  constructor(message: string, readonly failingGroup: FailingSequenceGroup) {
+    super(`${message}: timestamp=${failingGroup.timestamp} sequence=${failingGroup.sequence}` +
+      ` missing_ws=${failingGroup.missingWsTradeIds.slice(0, 20).join(',')}`);
+    this.name = 'ReconciliationEvidenceError';
+  }
+}
 
 /** A millisecond/sequence pair is a batch, not a trade ordinal. Persisted members of the
  * anchor millisecond are verified by ID/payload. A multi-trade post-anchor batch can only be
@@ -82,7 +96,13 @@ export function reconcileRecent(anchor: CanonicalTrade, rest: CanonicalTrade[],
   }
   for (const group of sequenceGroups.values()) {
     if (group.length > 1 && group.some((trade) => !wsById.has(trade.id))) {
-      throw new Error('Incomplete same-timestamp/sequence WS ordering witness');
+      throw new ReconciliationEvidenceError('Incomplete same-timestamp/sequence WS ordering witness', {
+        timestamp: group[0]!.timestamp, sequence: group[0]!.sequence!,
+        restTrades: group.map(({ id, timestamp, sequence, price, size, side }) =>
+          ({ id, timestamp, sequence, price, size, side })),
+        wsTradeIds: group.filter((trade) => wsById.has(trade.id)).map((trade) => trade.id),
+        missingWsTradeIds: group.filter((trade) => !wsById.has(trade.id)).map((trade) => trade.id),
+      });
     }
   }
   const wsOrder = new Map(resumedWs.map((trade, index) => [trade.id, index]));

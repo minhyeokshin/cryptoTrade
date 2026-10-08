@@ -57,7 +57,8 @@ describe('market runtime failed startup', () => {
     }
     const ws = new LiveWs();
     let startupHealth = '';
-    const repository = { recoveryTail: async () => ({ lastCandleEnd: end,
+    const repository = { verifyPersistedWsWitnesses: async () => {},
+      recoveryTail: async () => ({ lastCandleEnd: end,
       previousClose: '100000', lastTrade: anchor, anchorTimestampTrades: [anchor], unfinalizedTrades: [] }),
       recordStartupHealth: async (_state: string, reason: string) => { startupHealth = reason; } } as MarketRepository;
     const runtime = new MarketRuntime('WRITE', repository, ws as unknown as BybitPublicWs,
@@ -86,7 +87,8 @@ describe('market runtime failed startup', () => {
       }
     }
     const ws = new LiveWs();
-    const repository = { recoveryTail: async () => ({ lastCandleEnd: end,
+    const repository = { verifyPersistedWsWitnesses: async () => {},
+      recoveryTail: async () => ({ lastCandleEnd: end,
       previousClose: '100000', lastTrade: anchor, anchorTimestampTrades: [anchor], unfinalizedTrades: [] }),
       recordFailure: async () => {} } as MarketRepository;
     const runtime = new MarketRuntime('WRITE', repository, ws as unknown as BybitPublicWs,
@@ -114,7 +116,8 @@ describe('market runtime failed startup', () => {
       }
     }
     const ws = new LiveWs();
-    const repository = { recoveryTail: async () => ({ lastCandleEnd: end,
+    const repository = { verifyPersistedWsWitnesses: async () => {},
+      recoveryTail: async () => ({ lastCandleEnd: end,
       previousClose: '100000', lastTrade: anchor, anchorTimestampTrades: [anchor],
       unfinalizedTrades: [first, second] }), recordFailure: async () => {} } as MarketRepository;
     const runtime = new MarketRuntime('WRITE', repository, ws as unknown as BybitPublicWs,

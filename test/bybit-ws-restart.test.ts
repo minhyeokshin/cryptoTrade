@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { BybitPublicWs } from '../src/market/bybit-ws.js';
+import type { CanonicalTrade } from '../src/types/domain.js';
 
 class FakeSocket extends EventEmitter {
   readyState: number = WebSocket.OPEN;
@@ -12,6 +13,27 @@ class FakeSocket extends EventEmitter {
 }
 
 describe('public WebSocket generation safety', () => {
+  it('captures original frame order for trades sharing timestamp and sequence', () => {
+    const socket = new FakeSocket();
+    const ws = new BybitPublicWs(undefined, () => socket as unknown as WebSocket);
+    const trades: CanonicalTrade[] = [];
+    ws.on('trade', (trade: CanonicalTrade) => trades.push(trade));
+    ws.start(); socket.emit('open');
+    socket.emit('message', JSON.stringify({ op: 'subscribe', success: true }));
+    socket.emit('message', JSON.stringify({ topic: 'publicTrade.BTCUSD', data: [
+      { s: 'BTCUSD', i: 'b', S: 'Buy', p: '101', v: '2', T: '1791435000000', seq: 9 },
+      { s: 'BTCUSD', i: 'a', S: 'Buy', p: '102', v: '3', T: '1791435000000', seq: 9 },
+    ] }));
+    socket.emit('message', JSON.stringify({ topic: 'publicTrade.BTCUSD', data: [
+      { s: 'BTCUSD', i: 'c', S: 'Buy', p: '103', v: '4', T: '1791435000000', seq: 9 },
+    ] }));
+    expect(trades.map((trade) => trade.id)).toEqual(['b', 'a', 'c']);
+    expect(trades.map((trade) => trade.witness?.receiveOrder)).toEqual([1, 2, 3]);
+    expect(trades.map((trade) => trade.witness?.messageOrdinal)).toEqual([1, 1, 2]);
+    expect(trades.map((trade) => trade.witness?.messageIndex)).toEqual([0, 1, 0]);
+    expect(trades[0]?.witness?.connectionId).toBe(trades[2]?.witness?.connectionId);
+    ws.stop();
+  });
   it('requires a real successful subscription response, not just socket open or trade', () => {
     const socket = new FakeSocket();
     const ws = new BybitPublicWs(undefined, () => socket as unknown as WebSocket);

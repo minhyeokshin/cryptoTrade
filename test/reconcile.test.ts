@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CanonicalTrade } from '../src/types/domain.js';
-import { reconcileRecent } from '../src/market/reconcile.js';
+import { reconcileRecent, ReconciliationEvidenceError } from '../src/market/reconcile.js';
 
 const trade = (id: string, timestamp: number, sequence: number): CanonicalTrade => ({
   id, timestamp, sequence, receivedAt: timestamp + 10, side: 'Buy',
@@ -84,8 +84,13 @@ describe('bounded public REST/WS reconnect reconciliation', () => {
   it('fails closed if any member of a tied batch was missed by the resumed WS', () => {
     const a = trade('a', 2000, 2);
     const b = { ...trade('b', 2000, 2), price: '101' };
-    expect(() => reconcileRecent(anchor, [before, anchor, a, b, overlap], [a, overlap]))
-      .toThrow('Incomplete same-timestamp/sequence');
+    let failure: unknown;
+    try { reconcileRecent(anchor, [before, anchor, a, b, overlap], [a, overlap]); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ReconciliationEvidenceError);
+    expect((failure as ReconciliationEvidenceError).failingGroup).toMatchObject({
+      timestamp: 2000, sequence: 2, wsTradeIds: ['a'], missingWsTradeIds: ['b'],
+    });
   });
   it('does not treat an anchor-sharing sequence as a per-trade ordinal', () => {
     const peer = trade('peer', 1000, 1);

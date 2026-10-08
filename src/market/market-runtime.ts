@@ -46,8 +46,9 @@ export class MarketRuntime {
     this.ws.on('trade', (trade: CanonicalTrade) => {
       const old = this.buffer.get(trade.id);
       if (old && !sameTrade(old, trade)) { this.fault('Conflicting trade ID'); return; }
-      this.buffer.set(trade.id, trade);
-      if (this.disconnectAnchor) this.resumedWs.set(trade.id, trade);
+      // A replayed ID must not replace the original immutable WS ordering witness.
+      if (!old) this.buffer.set(trade.id, trade);
+      if (this.disconnectAnchor && !this.resumedWs.has(trade.id)) this.resumedWs.set(trade.id, trade);
       this.lastObserved = trade;
       try { if (this.builder.ingest(trade) === 'LATE') this.fault('Late trade'); }
       catch (error) { this.fault(String(error)); }
@@ -89,6 +90,8 @@ export class MarketRuntime {
     this.lastOverlap = current.overlap;
     if (this.mode === 'WRITE') {
       const tail = await this.repository!.recoveryTail();
+      await this.repository!.verifyPersistedWsWitnesses([
+        ...tail.anchorTimestampTrades, ...tail.unfinalizedTrades]);
       const byId = new Map(rest.map((trade) => [trade.id, trade]));
       if (tail.unfinalizedTrades.some((trade) => {
         const candidate = byId.get(trade.id);

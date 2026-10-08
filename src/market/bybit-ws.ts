@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'node:events';
+import { createHash, randomUUID } from 'node:crypto';
 import type { CanonicalTrade } from '../types/domain.js';
 import { normalizeWsTrade } from './trade-normalizer.js';
 
@@ -43,6 +44,9 @@ export class BybitPublicWs extends EventEmitter {
   private connect(): void {
     if (this.stopped) return;
     const generation = ++this.generation;
+    const connectionId = randomUUID();
+    let messageOrdinal = 0;
+    let receiveOrder = 0;
     const ws = this.socketFactory(this.url);
     this.ws = ws;
     const current = () => !this.stopped && this.generation === generation && this.ws === ws;
@@ -57,9 +61,10 @@ export class BybitPublicWs extends EventEmitter {
     ws.on('pong', () => { if (current()) this.lastHeartbeat = Date.now(); });
     ws.on('message', (raw) => {
       if (!current()) return;
+      const rawMessage = raw.toString();
       let message: { op?: string; success?: boolean; type?: string; topic?: string;
-        data?: unknown[] | { successTopics?: string[]; failTopics?: string[] } };
-      try { message = JSON.parse(raw.toString()) as typeof message; }
+        id?: string; data?: unknown[] | { successTopics?: string[]; failTopics?: string[] } };
+      try { message = JSON.parse(rawMessage) as typeof message; }
       catch (error) { this.emit('error', error); return; }
       if (message.op === 'subscribe' || message.type === 'COMMAND_RESP') {
         const topics = !Array.isArray(message.data) && message.data?.successTopics;
@@ -75,7 +80,15 @@ export class BybitPublicWs extends EventEmitter {
       if (message.topic === 'publicTrade.BTCUSD') {
         try {
           if (!Array.isArray(message.data)) throw new Error('Invalid public trade message data');
-          const trades: CanonicalTrade[] = message.data.map((x) => normalizeWsTrade(x));
+          const ordinal = ++messageOrdinal;
+          const receivedAt = Date.now();
+          const messageHash = createHash('sha256').update(rawMessage).digest('hex');
+          const trades: CanonicalTrade[] = message.data.map((x, messageIndex) => ({
+            ...normalizeWsTrade(x, receivedAt),
+            witness: { connectionId, messageOrdinal: ordinal, messageIndex,
+              receiveOrder: ++receiveOrder, receivedAt, messageHash, rawMessage,
+              exchangeMessageId: message.id ?? null },
+          }));
           for (const trade of trades) { this.latestTrade = trade.timestamp; this.emit('trade', trade); }
         } catch (error) { this.emit('error', error); }
       } else if (message.topic?.startsWith('kline.')) this.emit('kline', message);

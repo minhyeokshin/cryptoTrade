@@ -4,7 +4,7 @@ import { poolForReadOnlyRole } from './db/postgres.js';
 import { MarketRepository } from './db/repositories/market.js';
 import { recentTrades } from './market/bybit-rest.js';
 import { BybitPublicWs } from './market/bybit-ws.js';
-import { reconcileRecent } from './market/reconcile.js';
+import { reconcileRecent, ReconciliationEvidenceError } from './market/reconcile.js';
 import { sameTrade } from './market/trade-normalizer.js';
 import type { CanonicalTrade } from './types/domain.js';
 
@@ -58,8 +58,24 @@ try {
     sequence: trade.sequence, price: trade.price, size: trade.size, side: trade.side });
   let result: ReturnType<typeof reconcileRecent> | null = null;
   let error: string | null = null;
+  let failingGroup: ReconciliationEvidenceError['failingGroup'] | null = null;
+  let persistedFailingGroup: Array<{ trade_id: string; exchange_timestamp: Date;
+    raw_sequence: string | null; price: string; size: string; side: string }> = [];
   try { result = reconcileRecent(tail.lastTrade, rest, wsRows, tail.anchorTimestampTrades); }
-  catch (cause) { error = String(cause); }
+  catch (cause) {
+    error = String(cause);
+    if (cause instanceof ReconciliationEvidenceError) {
+      failingGroup = cause.failingGroup;
+      const persisted = await pool.query<{ trade_id: string; exchange_timestamp: Date;
+        raw_sequence: string | null; price: string; size: string; side: string }>(
+        `SELECT trade_id,exchange_timestamp,raw_sequence::text,price::text,size::text,side
+           FROM bybit_live.bybit_live_trades
+          WHERE exchange_timestamp=to_timestamp($1::double precision/1000)
+            AND raw_sequence=$2`,
+        [failingGroup.timestamp, failingGroup.sequence]);
+      persistedFailingGroup = persisted.rows;
+    }
+  }
   const overlap = wsRows.filter((trade) => {
     const witness = restById.get(trade.id);
     return witness && sameTrade(trade, witness) &&
@@ -78,6 +94,7 @@ try {
     restRows: rest.length, wsRows: wsRows.length, restWsOverlap: overlap,
     restOlderThanAnchor: rest.filter((trade) => trade.timestamp < tail.lastTrade.timestamp).length,
     reconciliationResult: error ? 'FAIL' : 'PASS', error,
+    failingGroup, persistedFailingGroup,
     missingTrades: result?.recovered.map(detail) ?? null,
     duplicateTrades: result ? result.recovered.filter((trade) =>
       tail.unfinalizedTrades.some((old) => old.id === trade.id)).length : null,
