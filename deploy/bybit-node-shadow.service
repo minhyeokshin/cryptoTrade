@@ -1,0 +1,34 @@
+[Unit]
+Description=cryptoTrade Node BTCUSD Forward Shadow (no orders)
+After=network-online.target postgresql.service bybit-node-producer.service
+Wants=network-online.target
+Requires=bybit-node-producer.service
+RequiresMountsFor=/opt/cryptoTrade-shadow /opt/cryptoTrade-frozen /opt/cryptoTrade-python
+StartLimitIntervalSec=300
+StartLimitBurst=3
+ConditionPathExists=/etc/cryptoTrade/shadow-runtime.env
+ConditionPathExists=/etc/cryptoTrade/shadow_operational_gate.json
+
+[Service]
+Type=simple
+User=bybit_shadow
+Group=bybit_shadow
+WorkingDirectory=/opt/cryptoTrade-shadow
+Environment=RUNTIME_ROLE=shadow
+Environment=PGDATABASE=btc_analysis
+Environment=PGUSER=bybit_shadow
+Environment=PYTHON_RESEARCH_ROOT=/opt/cryptoTrade-frozen
+EnvironmentFile=/etc/cryptoTrade/shadow-runtime.env
+ExecStart=/usr/bin/node /opt/cryptoTrade-shadow/dist/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/cryptoTrade-shadow /opt/cryptoTrade-frozen /opt/cryptoTrade-python
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -13,6 +13,7 @@ import { HourlyMailer, validateHourlyEnvironment } from '../report/mailer.js';
 import { ShadowSnapshotProvider } from '../report/shadow-snapshot.js';
 import { ShadowStateStore } from './state-store.js';
 import { ShadowPersistentRuntime } from './persistent-runtime.js';
+import { ShadowRunLease } from '../db/shadow-run-lease.js';
 
 export interface ShadowLaunchConfig {
   activationId: string;
@@ -32,6 +33,12 @@ export function validateShadowRuntimeApproval(raw: unknown): void {
     p.policy_transition !== 'APPROVED_BY_HUMAN' ||
     p.historical_strategy_gate !== 'PASS_FOR_FORWARD_SHADOW' ||
     p.runtime_start_authorized !== true ||
+    p.approved_by_human !== true ||
+    p.activation_requires_separate_uuid_approval !== true ||
+    p.strategy_version !== FROZEN.strategyVersion ||
+    p.direction_model_hash !== FROZEN.directionModelHash ||
+    p.feature_schema_hash !== FROZEN.featureSchemaHash ||
+    p.threshold_hash !== FROZEN.thresholdHash ||
     p.initial_equity_usd !== FROZEN.initialEquityUsd ||
     p.isolated_allocation_rate !== FROZEN.allocationRate ||
     p.leverage !== FROZEN.leverage ||
@@ -101,6 +108,12 @@ export async function launchRestoredShadow(): Promise<void> {
   );
   validateHourlyEnvironment(process.env);
   const pool = poolForRole('bybit_shadow');
+  let lease: ShadowRunLease | null = null;
+  let closing: Promise<void> | null = null;
+  const closeResources = () => closing ??= (async () => {
+    if (lease) await lease.release();
+    await pool.end();
+  })();
   const mailer = new HourlyMailer(new PostgresHourlyClaim(pool));
   const modelFile = resolve(
     config.researchRoot,
@@ -123,12 +136,13 @@ export async function launchRestoredShadow(): Promise<void> {
     () => {
       hourly?.stop();
       process.exitCode = 1;
-      void pool.end().catch(() => {
+      void closeResources().catch(() => {
         process.exitCode = 1;
       });
     },
   );
   try {
+    lease = await ShadowRunLease.acquire(pool);
     await mailer.verifyConnection();
     await runtime.start();
     hourly = new HourlyScheduler(new ShadowSnapshotProvider(
@@ -138,13 +152,13 @@ export async function launchRestoredShadow(): Promise<void> {
   } catch (error) {
     hourly?.stop();
     runtime.stop();
-    await pool.end();
+    await closeResources();
     throw error;
   }
   const shutdown = () => {
     hourly?.stop();
     runtime.stop();
-    void pool.end().catch(() => {
+    void closeResources().catch(() => {
       process.exitCode = 1;
     });
   };

@@ -3,6 +3,7 @@ import {
   parseShadowLaunchConfig,
   validateShadowRuntimeApproval,
 } from '../src/shadow/launch.js';
+import { FROZEN } from '../src/config/frozen.js';
 
 const activationId = '00000000-0000-4000-8000-000000000001';
 const valid = {
@@ -31,6 +32,12 @@ describe('explicit restored Shadow launch gate', () => {
       policy_transition: 'APPROVED_BY_HUMAN',
       historical_strategy_gate: 'PASS_FOR_FORWARD_SHADOW',
       runtime_start_authorized: false,
+      approved_by_human: true,
+      activation_requires_separate_uuid_approval: true,
+      strategy_version: FROZEN.strategyVersion,
+      direction_model_hash: FROZEN.directionModelHash,
+      feature_schema_hash: FROZEN.featureSchemaHash,
+      threshold_hash: FROZEN.thresholdHash,
       initial_equity_usd: 100,
       isolated_allocation_rate: 0.2,
       leverage: 1.8,

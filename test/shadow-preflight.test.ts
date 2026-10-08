@@ -28,6 +28,14 @@ const allowed = [
     can_delete: false,
   },
   {
+    schema_name: 'bybit_live',
+    table_name: 'node_producer_epochs',
+    can_select: true,
+    can_insert: false,
+    can_update: false,
+    can_delete: false,
+  },
+  {
     schema_name: 'shadow_trading_v1',
     table_name: 'node_shadow_journal',
     can_select: true,
@@ -91,7 +99,7 @@ describe('Shadow DB preflight', () => {
   });
   it('rejects missing journal grants and mutation rights', async () => {
     await expect(
-      verifyShadowDbPreflight(pool('bybit_shadow', allowed.slice(0, 3))),
+      verifyShadowDbPreflight(pool('bybit_shadow', allowed.slice(0, 4))),
     ).rejects.toThrow('journal/report privilege');
     const mutation = allowed.map((x) =>
       x.table_name === 'node_shadow_journal' ? { ...x, can_update: true } : x,

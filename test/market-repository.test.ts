@@ -37,4 +37,12 @@ describe('append-only market persistence', () => {
     await expect(new MarketRepository(pool).persist(candle, [trade])).rejects.toThrow('Conflicting persisted trade ID');
     expect(statements.at(-1)).toBe('ROLLBACK');
   });
+  it('commits operational health in the same append-only candle transaction', async () => {
+    const { pool, statements } = fakePool();
+    await new MarketRepository(pool).persist(candle, [trade], 'HEALTHY');
+    expect(statements.some((sql) => sql.includes('INSERT INTO bybit_live.operational_health_events')))
+      .toBe(true);
+    expect(statements.at(-1)).toBe('COMMIT');
+    expect(statements.some((sql) => /\bUPDATE\b|\bDELETE\b/.test(sql))).toBe(false);
+  });
 });

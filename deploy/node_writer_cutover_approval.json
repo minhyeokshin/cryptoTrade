@@ -1,0 +1,10 @@
+{
+  "policy": "NODE_CANONICAL_WRITER_CUTOVER",
+  "approved_by_human": true,
+  "approval_source": "explicit human operator cutover instruction on 2026-10-08",
+  "approved_at": "2026-10-08T05:08:44Z",
+  "node_writer_authorized": true,
+  "python_service": "bybit-producer.service",
+  "actual_orders_allowed": false,
+  "private_api_allowed": false
+}

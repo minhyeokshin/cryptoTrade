@@ -34,7 +34,8 @@ export class MarketRuntime {
   private attempted = false;
   constructor(private readonly mode: ProducerMode, private readonly repository?: MarketRepository,
               ws: BybitPublicWs = new BybitPublicWs(),
-              private readonly rest: PublicRest = { recentTrades, officialOneMinute }) {
+              private readonly rest: PublicRest = { recentTrades, officialOneMinute },
+              private readonly beforeWrite?: () => void) {
     this.ws = ws;
     if (mode === 'WRITE' && !repository) throw new Error('WRITE requires dedicated market repository');
     this.ws.on('trade', (trade: CanonicalTrade) => {
@@ -77,12 +78,37 @@ export class MarketRuntime {
     const rest = await this.rest.recentTrades();
     const overlap = rest.filter((x) => this.buffer.has(x.id));
     if (!overlap.length || overlap.some((x) => !sameTrade(x, this.buffer.get(x.id)!))) throw new Error('REST/WS overlap mismatch');
-    const first = Math.min(...[...this.buffer.values()].map((x) => x.receivedAt));
-    this.anchor = Math.floor(first / MINUTE) * MINUTE + MINUTE;
-    if (Date.now() < this.anchor + 3000) await sleep(this.anchor + 3000 - Date.now());
+    if (this.mode === 'WRITE') {
+      const tail = await this.repository!.recoveryTail();
+      const byId = new Map(rest.map((trade) => [trade.id, trade]));
+      if (tail.unfinalizedTrades.some((trade) => {
+        const candidate = byId.get(trade.id);
+        return !candidate || !sameTrade(candidate, trade);
+      })) throw new Error('Persisted unfinalized trade/REST boundary mismatch');
+      const bridge = reconcileRecent(tail.lastTrade, rest, [...this.buffer.values()]);
+      for (const trade of [...tail.unfinalizedTrades, ...bridge.recovered]) {
+        const old = this.buffer.get(trade.id);
+        if (old && !sameTrade(old, trade)) throw new Error('Canonical startup trade conflict');
+        if (!old) {
+          this.buffer.set(trade.id, trade);
+          if (this.builder.ingest(trade, true) === 'LATE') throw new Error('Startup recovery after finalization');
+        }
+      }
+      this.anchor = tail.lastCandleEnd;
+      this.previousClose = tail.previousClose;
+      this.lastCandle = tail.lastCandleEnd;
+      this.recoveredTrades += bridge.recovered.length;
+      this.lastOverlap = bridge.overlap;
+      await this.repository!.recordStartupHealth('BACKFILLING',
+        `DB/REST/WS overlap=${bridge.overlap} recovered=${bridge.recovered.length} anchor=${tail.lastTrade.id}`);
+    } else {
+      const first = Math.min(...[...this.buffer.values()].map((x) => x.receivedAt));
+      this.anchor = Math.floor(first / MINUTE) * MINUTE + MINUTE;
+      if (Date.now() < this.anchor + 3000) await sleep(this.anchor + 3000 - Date.now());
+      const official = await this.rest.officialOneMinute(this.anchor);
+      this.previousClose = official.close;
+    }
     if (!this.ws.connected || this.lastError) throw new Error('WS/continuity lost during startup');
-    const official = await this.rest.officialOneMinute(this.anchor);
-    this.previousClose = official.close;
     this.continuity = true;
     this.timer = setInterval(() => { void this.tick().catch((error: unknown) => this.fault(String(error))); }, 1000);
     } catch (error) {
@@ -98,7 +124,14 @@ export class MarketRuntime {
     this.continuity = false;
   }
   private block(reason: string): void { this.continuity = false; this.lastError = reason; }
-  private fault(reason: string): void { this.integrityFault = true; this.block(reason); }
+  private fault(reason: string): void {
+    if (this.integrityFault) return;
+    this.integrityFault = true;
+    this.block(reason);
+    if (this.mode === 'WRITE') {
+      void this.repository!.recordFailure(reason).catch(() => { this.lastError = `${reason}; FAILED health persistence failed`; });
+    }
+  }
   private scheduleReconcile(): void {
     if (this.integrityFault || this.reconnectTimer || !this.ws.connected || !this.disconnectAnchor) return;
     this.reconnectTimer = setTimeout(() => {
@@ -145,7 +178,14 @@ export class MarketRuntime {
     const official = await this.rest.officialOneMinute(end);
     const trades = [...this.buffer.values()].filter((x) => x.timestamp >= end - MINUTE && x.timestamp < end);
     const candle: CanonicalCandle = this.builder.finalize(end, Date.now(), this.previousClose, official);
-    if (this.mode === 'WRITE') await this.repository!.persist(candle, trades);
+    if (this.mode === 'WRITE') {
+      this.beforeWrite?.();
+      const nextCount = this.candles + 1;
+      const anomaly = this.builder.orderingViolations > 0 || this.builder.lateCount > 0;
+      const fresh = sourceFresh(Date.now(), this.ws.latestTrade, end, this.ws.connected, this.continuity);
+      const health = anomaly ? 'DEGRADED' : !fresh ? 'STALE' : nextCount < 3 ? 'WARMING' : 'HEALTHY';
+      await this.repository!.persist(candle, trades, health);
+    }
     this.anchor = end; this.previousClose = candle.close;
     this.lastCandle = end; this.candles++;
     for (const [id, trade] of this.buffer) if (trade.timestamp < end) this.buffer.delete(id);

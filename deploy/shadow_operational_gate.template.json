@@ -1,0 +1,16 @@
+{
+  "approved_by_human": false,
+  "approved_at": "REPLACE_WITH_CURRENT_UTC_AFTER_ALL_GATES_PASS",
+  "activation_id": "REPLACE_WITH_NEW_UUID",
+  "producer_epoch_id": "REPLACE_WITH_VERIFIED_NODE_EPOCH_UUID",
+  "single_writer": "NOT_RUN",
+  "producer_restart_safety": "NOT_RUN",
+  "current_live_stream_continuity": "NOT_RUN",
+  "source_freshness": "NOT_RUN",
+  "model_parity": "NOT_RUN",
+  "causal_inference": "NOT_RUN",
+  "shadow_db": "NOT_RUN",
+  "idempotency": "NOT_RUN",
+  "actual_orders": 0,
+  "private_api_calls": 0
+}

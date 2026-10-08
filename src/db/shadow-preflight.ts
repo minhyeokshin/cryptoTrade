@@ -13,6 +13,7 @@ const LIVE_TABLES = [
   'bybit_live_trades',
   'bybit_live_candles_1m',
   'operational_health_events',
+  'node_producer_epochs',
 ] as const;
 const SHADOW_TABLES = ['node_shadow_journal', 'node_hourly_reports'] as const;
 

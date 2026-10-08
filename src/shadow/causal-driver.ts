@@ -28,9 +28,9 @@ export class CausalShadowDriver {
   constructor(private readonly activationAt: number, private readonly processStartedAt: number,
               private readonly predictor: CausalPredictor, private readonly sink: CausalShadowSink,
               private readonly sourceFresh: () => boolean, private readonly now: () => number = Date.now) {
-    if (processStartedAt < activationAt) throw new Error('Process start precedes activation');
     if (sink.snapshot().activationAt !== activationAt) throw new Error('Restored activation mismatch');
     const open = sink.snapshot().open;
+    if (open && processStartedAt < activationAt) throw new Error('Open position predates activation');
     if (open && processStartedAt > open.signalTimestamp + MINUTE) {
       throw new Error('Open position may have missed a frozen 1m monitor during restart');
     }

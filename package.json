@@ -13,7 +13,11 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "start": "node dist/main.js",
-    "shadow:db-preflight": "node dist/shadow-db-preflight.js"
+    "shadow:db-preflight": "node dist/shadow-db-preflight.js",
+    "producer:db-preflight": "node dist/producer-db-preflight.js",
+    "producer:source-audit": "node dist/producer-source-audit.js",
+    "shadow:activate": "node dist/shadow-activate.js",
+    "shadow:inference-audit": "node dist/shadow-inference-audit.js"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",

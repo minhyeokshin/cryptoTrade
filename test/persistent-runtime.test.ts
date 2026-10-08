@@ -7,7 +7,7 @@ import type { ShadowJournal } from '../src/shadow/shadow-coordinator.js';
 import type { CanonicalCandle } from '../src/types/domain.js';
 
 const decision = 720_000_000;
-const activationAt = decision - 2000;
+const activationAt = decision;
 const activationId = '00000000-0000-4000-8000-000000000001';
 const candle = (end: number): CanonicalCandle => ({
   end,
@@ -176,6 +176,22 @@ describe('restore-only Shadow persistent runtime', () => {
     await expect(runtime.start(0)).rejects.toThrow(
       'activation journal missing',
     );
+    expect(marketStarts).toBe(0);
+  });
+  it('refuses to replay the first 5m decision if the approved activation time was missed', async () => {
+    let marketStarts = 0;
+    const runtime = new ShadowPersistentRuntime(
+      { ws: new EventEmitter(), start: async () => { marketStarts++; }, stop: () => {},
+        status: () => ({ sourceFresh: true, integrityFault: false }) },
+      { sourceState: async () => { throw new Error('must not read'); },
+        warmupBefore: async () => [], finalizedAfter: async () => [] },
+      { start: async () => { throw new Error('must not load model'); }, stop: () => {},
+        predict: async () => { throw new Error('must not infer'); } },
+      { restore: async () => ({ activationId, lastSignalTimestamp: null,
+          state: new ShadowEngine(activationAt, 100, 1).state }),
+        persistTransition: async () => { throw new Error('must not write'); } },
+      activationId, 1, async () => {}, () => {}, () => activationAt + 1000);
+    await expect(runtime.start(0)).rejects.toThrow('activation decision already passed');
     expect(marketStarts).toBe(0);
   });
 });

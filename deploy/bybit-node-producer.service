@@ -1,0 +1,29 @@
+[Unit]
+Description=cryptoTrade Node BTCUSD public canonical producer
+After=network-online.target postgresql.service
+Wants=network-online.target
+RequiresMountsFor=/opt/cryptoTrade-runtime
+ConditionPathExists=/etc/cryptoTrade/node_writer_cutover.json
+
+[Service]
+Type=simple
+User=bybit_producer
+Group=bybit_producer
+WorkingDirectory=/opt/cryptoTrade-runtime
+Environment=RUNTIME_ROLE=producer
+Environment=NODE_MARKET_PRODUCER_MODE=WRITE
+Environment=PGDATABASE=btc_analysis
+Environment=PGUSER=bybit_producer
+ExecStart=/usr/bin/node /opt/cryptoTrade-runtime/dist/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/cryptoTrade-runtime
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

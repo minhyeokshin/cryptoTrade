@@ -87,6 +87,9 @@ export class ShadowPersistentRuntime {
       if (!restored || restored.activationId !== this.activationId) {
         throw new Error('Verified Shadow activation journal missing');
       }
+      if (restored.state.processedSignals.length === 0 && this.now() >= restored.state.activationAt) {
+        throw new Error('First causal activation decision already passed; new approval/activation required');
+      }
       await this.model.start();
       await this.publicMarket.start();
       const deadline = this.now() + maxWaitMs;

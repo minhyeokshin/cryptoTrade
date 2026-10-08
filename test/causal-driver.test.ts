@@ -13,6 +13,29 @@ const trade = (receivedAt: number): CanonicalTrade => ({ id: String(receivedAt),
   receivedAt, side: 'Buy', price: '100', size: '1', sequence: 1, source: 'WEBSOCKET' });
 
 describe('causal live Shadow decision driver', () => {
+  it('permits a future approved 5m activation but never infers before its first finalized decision', async () => {
+    const activationAt = decision;
+    let clock = decision - minute + 1000;
+    let predictions = 0;
+    const state = new ShadowEngine(activationAt, 100, 1).state;
+    const driver = new CausalShadowDriver(activationAt, decision - minute - 1000,
+      { predict: async (_rows, end) => {
+        predictions++;
+        return { decisionTimestamp: end, featureCutoff: end, side: 'NO_ACTION',
+          confidence: 0, actionable: false, flipActionable: false,
+          modelHash: FROZEN.directionModelHash,
+          featureSchemaHash: FROZEN.featureSchemaHash };
+      } },
+      { snapshot: () => state, process: async () => ({ status: 'NO_ACTION', entry: false, exit: false }) },
+      () => true, () => clock);
+    driver.seedWarmup(Array.from({ length: 11_998 }, (_, i) =>
+      candle(decision - (11_999 - i) * minute)));
+    expect(await driver.onFinalizedCandle(candle(decision - minute))).toBe('NO_INFERENCE');
+    expect(predictions).toBe(0);
+    clock = decision + 1000;
+    expect(await driver.onFinalizedCandle(candle(decision))).toBe('NO_ACTION_RECORDED');
+    expect(predictions).toBe(1);
+  });
   it('never replays warmup and uses only the first public trade after inference is ready', async () => {
     const activationAt = decision - 1000;
     let clock = decision + 1000;

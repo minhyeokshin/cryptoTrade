@@ -1,11 +1,55 @@
 import type pg from 'pg';
 import { Decimal } from 'decimal.js';
 import type { CanonicalCandle, CanonicalTrade } from '../../types/domain.js';
+import type { ProducerLease } from '../producer-lease.js';
 
 export class MarketRepository {
-  constructor(private readonly pool: pg.Pool) {}
-  async persist(candle: CanonicalCandle, trades: CanonicalTrade[]): Promise<void> {
-    const client = await this.pool.connect();
+  constructor(private readonly pool: pg.Pool, private readonly lease?: ProducerLease) {}
+  async recoveryTail(): Promise<{ lastCandleEnd: number; previousClose: string;
+    lastTrade: CanonicalTrade; unfinalizedTrades: CanonicalTrade[] }> {
+    const client = this.lease?.client ?? await this.pool.connect();
+    try {
+      const candle = await client.query<{ end_ms: string; close: string }>(
+        `SELECT (extract(epoch FROM timestamp)*1000)::bigint::text AS end_ms,close::text
+           FROM bybit_live.bybit_live_candles_1m ORDER BY timestamp DESC LIMIT 1`);
+      const tradeColumns = `trade_id,
+        (extract(epoch FROM exchange_timestamp)*1000)::bigint::text AS timestamp_ms,
+        (extract(epoch FROM received_at)*1000)::bigint::text AS received_ms,
+        side,price::text,size::text,raw_sequence::text AS sequence`;
+      type Row = { trade_id: string; timestamp_ms: string; received_ms: string;
+        side: string; price: string; size: string; sequence: string | null };
+      const tail = await client.query<Row>(
+        `SELECT ${tradeColumns} FROM bybit_live.bybit_live_trades
+          ORDER BY exchange_timestamp DESC,raw_sequence DESC NULLS LAST,trade_id DESC LIMIT 1`);
+      if (!candle.rows[0] || !tail.rows[0]) throw new Error('Canonical producer tail unavailable');
+      const end = Number(candle.rows[0].end_ms);
+      const recent = await client.query<Row>(
+        `SELECT ${tradeColumns} FROM bybit_live.bybit_live_trades
+          WHERE exchange_timestamp >= to_timestamp($1::double precision/1000)
+          ORDER BY exchange_timestamp,raw_sequence NULLS LAST,trade_id LIMIT 1001`, [end]);
+      if (recent.rows.length > 1000) throw new Error('Unfinalized canonical tail exceeds bounded recovery');
+      const normalize = (row: Row): CanonicalTrade => {
+        const timestamp = Number(row.timestamp_ms);
+        const receivedAt = Number(row.received_ms);
+        const sequence = row.sequence === null ? null : Number(row.sequence);
+        if (!Number.isSafeInteger(timestamp) || !Number.isSafeInteger(receivedAt) ||
+            (sequence !== null && !Number.isSafeInteger(sequence)) ||
+            (row.side !== 'Buy' && row.side !== 'Sell') ||
+            !new Decimal(row.price).gt(0) || !new Decimal(row.size).gt(0)) {
+          throw new Error('Invalid persisted producer trade tail');
+        }
+        return { id: row.trade_id, timestamp, receivedAt, side: row.side,
+          price: row.price, size: row.size, sequence, source: 'REST_RECENT' };
+      };
+      if (!Number.isSafeInteger(end) || end % 60_000 !== 0 ||
+          !new Decimal(candle.rows[0].close).gt(0)) throw new Error('Invalid canonical candle tail');
+      return { lastCandleEnd: end, previousClose: candle.rows[0].close,
+        lastTrade: normalize(tail.rows[0]), unfinalizedTrades: recent.rows.map(normalize) };
+    } finally { if (!this.lease) client.release(); }
+  }
+  async persist(candle: CanonicalCandle, trades: CanonicalTrade[],
+                health?: 'WARMING' | 'HEALTHY' | 'STALE' | 'DEGRADED'): Promise<void> {
+    const client = this.lease?.client ?? await this.pool.connect();
     try {
       await client.query('BEGIN');
       for (const trade of trades) {
@@ -55,8 +99,23 @@ export class MarketRepository {
           throw new Error('Conflicting persisted candle timestamp');
         }
       }
+      if (health) await client.query(
+        `INSERT INTO bybit_live.operational_health_events (state,reason)
+         VALUES ($1,$2)`, [health, 'cryptoTrade-node canonical candle committed']);
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
-    finally { client.release(); }
+    finally { if (!this.lease) client.release(); }
+  }
+
+  async recordFailure(reason: string): Promise<void> {
+    if (!this.lease) return;
+    await this.recordStartupHealth('FAILED', reason);
+  }
+
+  async recordStartupHealth(state: 'BACKFILLING' | 'FAILED', reason: string): Promise<void> {
+    if (!this.lease) return;
+    await this.lease.client.query(
+      `INSERT INTO bybit_live.operational_health_events (state,reason)
+       VALUES ($1,$2)`, [state, `cryptoTrade-node: ${reason.slice(0, 300)}`]);
   }
 }

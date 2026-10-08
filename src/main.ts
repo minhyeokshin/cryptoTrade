@@ -8,17 +8,45 @@ import { poolForRole, verifyPeerRole } from './db/postgres.js';
 import { MarketReadRepository } from './db/repositories/market-read.js';
 import { ShadowStateStore } from './shadow/state-store.js';
 import { userInfo } from 'node:os';
+import { assertProducerCutover } from './market/producer-cutover-guard.js';
+import { ProducerLease } from './db/producer-lease.js';
+import { MarketRepository } from './db/repositories/market.js';
+import { randomUUID } from 'node:crypto';
+import { verifyProducerDbPreflight } from './db/producer-preflight.js';
 
 assertFrozenEnvironment(process.env);
 const role = process.env.RUNTIME_ROLE ?? 'api';
 if (role === 'producer') {
   const mode = process.env.NODE_MARKET_PRODUCER_MODE ?? 'DRY_RUN';
-  if (mode !== 'DRY_RUN' && mode !== 'READ_ONLY') {
-    throw new Error('Node canonical WRITE requires separate human-approved cutover and restart validation');
+  if (mode === 'WRITE') {
+    assertProducerCutover();
+    const pool = poolForRole('bybit_producer');
+    let lease: ProducerLease | null = null;
+    try {
+      await verifyProducerDbPreflight(pool);
+      lease = await ProducerLease.acquire(pool);
+      await lease.startEpoch(randomUUID(), '0.1.0');
+      const market = new MarketRuntime('WRITE', new MarketRepository(pool, lease),
+        undefined, undefined, assertProducerCutover);
+      await market.start();
+      const shutdown = () => {
+        market.stop();
+        void lease!.release().then(() => pool.end()).catch(() => { process.exitCode = 1; });
+      };
+      process.once('SIGTERM', shutdown);
+      process.once('SIGINT', shutdown);
+    } catch (error) {
+      if (lease) await lease.release();
+      await pool.end();
+      throw error;
+    }
+  } else if (mode === 'DRY_RUN' || mode === 'READ_ONLY') {
+    const market = new MarketRuntime(mode);
+    await market.start();
+    process.on('SIGTERM', () => market.stop());
+  } else {
+    throw new Error('Unknown Node market producer mode');
   }
-  const market = new MarketRuntime(mode);
-  await market.start();
-  process.on('SIGTERM', () => market.stop());
 } else if (role === 'shadow') {
   await launchRestoredShadow();
 } else if (role === 'api_shadow_readonly') {

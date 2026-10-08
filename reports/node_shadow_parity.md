@@ -9,7 +9,7 @@
 | Frozen feature schema | PASS (worker sample only) | Original Python feature builder; frozen schema hash exact |
 | Frozen Direction prediction through Node RPC | PASS (one 2022 sample) | 15,001 causal candles; ready/hash handshake, Node client → long-running Python worker vs original joblib: side exact, probability error 0, hashes exact |
 | Inverse PnL/fees/slippage | PASS (two fixtures) | Original Python LONG and SHORT values; test tolerance 1e-9 |
-| Persistent Shadow PnL | NOT_RUN | DB-backed lifecycle not implemented |
+| Persistent Shadow PnL | NOT_RUN | Append-only journal and restore-only runtime implemented in code; production migration/lifecycle not executed |
 
 Model parity probe uses only a 2022 Development sample; candle parity uses only the pre-prospective 2026-09-30 official archive. Neither performs training or prospective-period evaluation. The final partial minute in the 5,000-trade candle sample is a formula-parity check, not a finalized operational candle. Passing these samples does not establish production cutover readiness.
 
