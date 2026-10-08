@@ -36,6 +36,13 @@ export class CandleBuilder {
   lateCount = 0;
   private latestTimestamp = -Infinity;
 
+  discardBefore(start: number): void {
+    if (!Number.isSafeInteger(start) || start % MINUTE !== 0 || this.finalized.size) {
+      throw new Error('Invalid new live epoch boundary');
+    }
+    for (const [id, trade] of this.trades) if (trade.timestamp < start) this.trades.delete(id);
+  }
+
   ingest(trade: CanonicalTrade, recovered = false): 'ACCEPTED' | 'DUPLICATE' | 'LATE' {
     const old = this.trades.get(trade.id);
     if (old) {

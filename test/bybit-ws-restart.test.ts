@@ -12,6 +12,18 @@ class FakeSocket extends EventEmitter {
 }
 
 describe('public WebSocket generation safety', () => {
+  it('requires a real successful subscription response, not just socket open or trade', () => {
+    const socket = new FakeSocket();
+    const ws = new BybitPublicWs(undefined, () => socket as unknown as WebSocket);
+    ws.on('error', () => {});
+    ws.start(); socket.emit('open');
+    expect(ws.subscribed).toBe(false);
+    socket.emit('message', JSON.stringify({ op: 'subscribe', success: false }));
+    expect(ws.subscribed).toBe(false);
+    socket.emit('message', JSON.stringify({ op: 'subscribe', success: true }));
+    expect(ws.subscribed).toBe(true);
+    ws.stop();
+  });
   it('ignores delayed events from a stopped socket after immediate restart', () => {
     const sockets: FakeSocket[] = [];
     const ws = new BybitPublicWs(undefined, () => {
@@ -27,11 +39,14 @@ describe('public WebSocket generation safety', () => {
     const old = sockets[0]!;
     old.emit('open');
     expect(ws.connected).toBe(true);
+    expect(ws.subscribed).toBe(false);
     expect(() => ws.start()).toThrow('already started');
     ws.stop();
     ws.start();
     const current = sockets[1]!;
     current.emit('open');
+    current.emit('message', JSON.stringify({ op: 'subscribe', success: true }));
+    expect(ws.subscribed).toBe(true);
     old.emit('close');
     const payload = JSON.stringify({ topic: 'publicTrade.BTCUSD', data: [
       { s: 'BTCUSD', i: 'trade-1', S: 'Buy', p: '100000', v: '1', T: '1791435000000', seq: 1 },
@@ -46,6 +61,7 @@ describe('public WebSocket generation safety', () => {
     expect(ws.reconnectCount).toBe(0);
     expect(sockets).toHaveLength(2);
     ws.stop();
+    expect(ws.subscribed).toBe(false);
   });
 
   it('reconnects once after a current socket closes', () => {

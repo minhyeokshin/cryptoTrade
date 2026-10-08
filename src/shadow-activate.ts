@@ -11,6 +11,7 @@ import { parseShadowLaunchConfig, validateShadowRuntimeApproval } from './shadow
 import { readShadowOperationalGate, validateShadowOperationalGate } from './shadow/operational-gate.js';
 import { auditProducerSource } from './market/source-audit.js';
 import { publicContractSpec } from './market/bybit-rest.js';
+import { assertPostEpochWarmup } from './shadow/epoch-boundary.js';
 
 function serviceState(...args: string[]): string {
   const result = spawnSync('systemctl', args, { encoding: 'utf8', timeout: 5000 });
@@ -35,11 +36,11 @@ try {
   const now = Date.now();
   validateShadowOperationalGate(readShadowOperationalGate(), config.activationId, source.epochId, now);
   const market = new MarketReadRepository(pool);
+  const liveEpochBoundary = await market.liveEpochBoundary();
   const candles = await market.warmupBefore(now, 11_999);
-  if (candles.length !== 11_999 || candles.at(-1)?.end !== source.latestCandleTimestamp ||
-      candles.some((candle, i) => i > 0 && candle.end !== candles[i - 1]!.end + 60_000)) {
-    throw new Error('Full contiguous frozen warmup unavailable; no activation created');
-  }
+  assertPostEpochWarmup(candles, liveEpochBoundary, 11_999);
+  if (candles.at(-1)?.end !== source.latestCandleTimestamp)
+    throw new Error('Warmup does not end at current source tail');
   const spec = await publicContractSpec();
   if (spec.lotSize !== config.lotSize) throw new Error('Inverse contract lot size mismatch');
   const mark = Number(candles.at(-1)!.close);

@@ -44,6 +44,24 @@ export class ProducerLease {
     } catch (error) { await this.client.query('ROLLBACK'); throw error; }
   }
 
+  async recordNewLiveBoundary(approvalId: string, epochId: string, gapStart: number,
+    firstVerified: { id: string; timestamp: number }, completeMinuteStart: number): Promise<void> {
+    if (this.released || !Number.isSafeInteger(gapStart) ||
+        !Number.isSafeInteger(firstVerified.timestamp) ||
+        firstVerified.timestamp <= gapStart ||
+        !Number.isSafeInteger(completeMinuteStart) || completeMinuteStart % 60_000 !== 0 ||
+        completeMinuteStart <= firstVerified.timestamp) {
+      throw new Error('Invalid new live epoch boundary');
+    }
+    await this.client.query(
+      `INSERT INTO bybit_live.node_live_epoch_boundaries
+        (approval_id,epoch_id,gap_start,gap_end,first_verified_trade_id,first_complete_minute_start,
+         historical_source_gap)
+       VALUES ($1::uuid,$2::uuid,to_timestamp($3::double precision/1000),
+         to_timestamp($4::double precision/1000),$5,to_timestamp($6::double precision/1000),'OPEN')`,
+      [approvalId, epochId, gapStart, firstVerified.timestamp, firstVerified.id, completeMinuteStart]);
+  }
+
   async release(): Promise<void> {
     if (this.released) return;
     this.released = true;

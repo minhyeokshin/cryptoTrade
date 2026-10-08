@@ -1,0 +1,12 @@
+{
+  "policy": "NODE_CURRENT_LIVE_EPOCH",
+  "approval_id": "90c276e6-f9d6-457b-a659-d8e3d254116a",
+  "approval_source": "explicit human operator request to preserve the historical gap and start a new live epoch",
+  "approved_at": "2026-10-08T06:44:19Z",
+  "expected_gap_start": "2026-10-08T05:55:50.099Z",
+  "historical_gap_may_remain_open": true,
+  "new_live_epoch_authorized": true,
+  "forward_shadow_may_start_after_new_epoch_health_pass": true,
+  "actual_orders_allowed": false,
+  "private_api_allowed": false
+}

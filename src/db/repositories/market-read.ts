@@ -38,6 +38,15 @@ const columns = `
 export class MarketReadRepository {
   constructor(private readonly pool: pg.Pool) {}
 
+  async liveEpochBoundary(): Promise<number> {
+    const result = await this.pool.query<{ ms: string }>(
+      `SELECT (extract(epoch FROM first_complete_minute_start)*1000)::bigint::text AS ms
+         FROM bybit_live.node_live_epoch_boundaries ORDER BY recorded_at DESC LIMIT 1`);
+    const ms = Number(result.rows[0]?.ms);
+    if (!Number.isSafeInteger(ms) || ms <= 0) throw new Error('Verified new live epoch boundary unavailable');
+    return ms;
+  }
+
   async warmupBefore(cutoffMs: number, limit = 11_999): Promise<CanonicalCandle[]> {
     if (!Number.isSafeInteger(cutoffMs) || !Number.isInteger(limit) || limit < 1 || limit > 12_000) {
       throw new Error('Invalid warmup range');

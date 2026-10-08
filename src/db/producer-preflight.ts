@@ -3,7 +3,7 @@ import type pg from 'pg';
 type PrivilegeRow = { schema_name: string; table_name: string; can_select: boolean;
   can_insert: boolean; can_update: boolean; can_delete: boolean };
 const REQUIRED = ['bybit_live_trades', 'bybit_live_candles_1m',
-  'operational_health_events', 'node_producer_epochs'] as const;
+  'operational_health_events', 'node_producer_epochs', 'node_live_epoch_boundaries'] as const;
 
 /** Catalog-only permission audit on the actual dedicated peer session. */
 export async function verifyProducerDbPreflight(pool: pg.Pool): Promise<void> {

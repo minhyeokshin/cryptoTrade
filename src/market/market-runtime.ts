@@ -4,10 +4,11 @@ import { officialOneMinute, recentTrades } from './bybit-rest.js';
 import { BybitPublicWs } from './bybit-ws.js';
 import { sameTrade } from './trade-normalizer.js';
 import { reconcileRecent } from './reconcile.js';
+import { verifyCurrentOverlap } from './current-overlap.js';
 import { sourceFresh } from './freshness.js';
 import type { MarketRepository } from '../db/repositories/market.js';
 
-export type ProducerMode = 'DRY_RUN' | 'READ_ONLY' | 'WRITE';
+export type ProducerMode = 'DRY_RUN' | 'READ_ONLY' | 'WRITE' | 'NEW_LIVE_EPOCH';
 type PublicRest = { recentTrades: typeof recentTrades; officialOneMinute: typeof officialOneMinute };
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 export class MarketRuntime {
@@ -36,9 +37,12 @@ export class MarketRuntime {
   constructor(private readonly mode: ProducerMode, private readonly repository?: MarketRepository,
               ws: BybitPublicWs = new BybitPublicWs(),
               private readonly rest: PublicRest = { recentTrades, officialOneMinute },
-              private readonly beforeWrite?: () => void) {
+              private readonly beforeWrite?: () => void,
+              private readonly newEpoch?: { expectedGapStart: number;
+                record: (gapStart: number, firstVerified: CanonicalTrade, minuteStart: number) => Promise<void> }) {
     this.ws = ws;
-    if (mode === 'WRITE' && !repository) throw new Error('WRITE requires dedicated market repository');
+    if ((mode === 'WRITE' || mode === 'NEW_LIVE_EPOCH') && !repository) throw new Error('WRITE requires dedicated market repository');
+    if (mode === 'NEW_LIVE_EPOCH' && !newEpoch) throw new Error('Explicit new live epoch approval required');
     this.ws.on('trade', (trade: CanonicalTrade) => {
       const old = this.buffer.get(trade.id);
       if (old && !sameTrade(old, trade)) { this.fault('Conflicting trade ID'); return; }
@@ -56,7 +60,7 @@ export class MarketRuntime {
       }
       this.block('WebSocket disconnected; reconcile before resume');
     });
-    this.ws.on('connected', () => { if (this.disconnectAnchor) this.scheduleReconcile(); });
+    this.ws.on('subscribed', () => { if (this.disconnectAnchor) this.scheduleReconcile(); });
     this.ws.on('error', (error: Error) => this.fault(error.message));
   }
   status() {
@@ -78,12 +82,11 @@ export class MarketRuntime {
     try {
     this.ws.start();
     const until = Date.now() + 30_000;
-    while ((!this.ws.connected || this.buffer.size === 0) && Date.now() < until) await sleep(100);
-    if (!this.ws.connected || !this.buffer.size) throw new Error('WS-first buffer unavailable');
+    while ((!this.ws.connected || !this.ws.subscribed || this.buffer.size === 0) && Date.now() < until) await sleep(100);
+    if (!this.ws.connected || !this.ws.subscribed || !this.buffer.size) throw new Error('WS-first open/subscribe/trade unavailable');
     const rest = await this.rest.recentTrades();
-    const overlap = rest.filter((x) => this.buffer.has(x.id));
-    if (!overlap.length || overlap.some((x) => !sameTrade(x, this.buffer.get(x.id)!))) throw new Error('REST/WS overlap mismatch');
-    this.lastOverlap = overlap.length;
+    const current = verifyCurrentOverlap(rest, [...this.buffer.values()]);
+    this.lastOverlap = current.overlap;
     if (this.mode === 'WRITE') {
       const tail = await this.repository!.recoveryTail();
       const byId = new Map(rest.map((trade) => [trade.id, trade]));
@@ -109,11 +112,24 @@ export class MarketRuntime {
       await this.repository!.recordStartupHealth('BACKFILLING',
         `DB/REST/WS overlap=${bridge.overlap} recovered=${bridge.recovered.length} anchor=${tail.lastTrade.id}`);
     } else {
+      if (this.mode === 'NEW_LIVE_EPOCH') {
+        const gapStart = await this.repository!.historicalGapStart();
+        if (gapStart !== this.newEpoch!.expectedGapStart) throw new Error('Historical gap start changed after approval');
+        if (current.firstVerified.timestamp <= gapStart) throw new Error('New live epoch does not follow historical tail');
+      }
       const first = Math.min(...[...this.buffer.values()].map((x) => x.receivedAt));
-      this.anchor = Math.floor(first / MINUTE) * MINUTE + MINUTE;
+      this.anchor = Math.floor(Math.max(first, Date.now()) / MINUTE) * MINUTE + MINUTE;
       if (Date.now() < this.anchor + 3000) await sleep(this.anchor + 3000 - Date.now());
       const official = await this.rest.officialOneMinute(this.anchor);
       this.previousClose = official.close;
+      for (const [id, trade] of this.buffer) if (trade.timestamp < this.anchor) this.buffer.delete(id);
+      this.builder.discardBefore(this.anchor);
+      if (this.mode === 'NEW_LIVE_EPOCH') {
+        if (!this.ws.connected || !this.ws.subscribed || this.lastError || this.integrityFault) {
+          throw new Error('New live epoch lost WS integrity before boundary');
+        }
+        await this.newEpoch!.record(this.newEpoch!.expectedGapStart, current.firstVerified, this.anchor);
+      }
     }
     if (!this.ws.connected || this.lastError) throw new Error('WS/continuity lost during startup');
     this.continuity = true;
@@ -135,29 +151,30 @@ export class MarketRuntime {
     if (this.integrityFault) return;
     this.integrityFault = true;
     this.block(reason);
-    if (this.mode === 'WRITE') {
+    if (this.mode === 'WRITE' || this.mode === 'NEW_LIVE_EPOCH') {
       void this.repository!.recordFailure(reason).catch(() => { this.lastError = `${reason}; FAILED health persistence failed`; });
     }
   }
   private scheduleReconcile(): void {
-    if (this.integrityFault || this.reconnectTimer || !this.ws.connected || !this.disconnectAnchor) return;
+    if (this.integrityFault || this.reconnectTimer || !this.ws.connected ||
+        !this.ws.subscribed || !this.disconnectAnchor) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.reconcile().catch((error: unknown) => {
         this.block(String(error));
         this.reconcileAttempts++;
         if (this.reconcileAttempts >= 3) this.fault('Bounded reconnect reconciliation exhausted');
-        else if (this.ws.connected && this.disconnectAnchor) this.scheduleReconcile();
+        else if (this.ws.connected && this.ws.subscribed && this.disconnectAnchor) this.scheduleReconcile();
       });
     }, 5_000);
   }
   private async reconcile(): Promise<void> {
-    if (this.reconciling || !this.disconnectAnchor || !this.ws.connected) return;
+    if (this.reconciling || !this.disconnectAnchor || !this.ws.connected || !this.ws.subscribed) return;
     this.reconciling = true;
     try {
       if (this.integrityFault) throw new Error('Integrity fault requires supervised restart');
-      const rest = await recentTrades();
-      if (!this.ws.connected || this.builder.lateCount || this.integrityFault) throw new Error('Reconnect interrupted or integrity fault');
+      const rest = await this.rest.recentTrades();
+      if (!this.ws.connected || !this.ws.subscribed || this.builder.lateCount || this.integrityFault) throw new Error('Reconnect interrupted or integrity fault');
       const result = reconcileRecent(this.disconnectAnchor, rest, [...this.resumedWs.values()],
         this.disconnectAnchorGroup);
       for (const trade of result.recovered) {
@@ -187,7 +204,7 @@ export class MarketRuntime {
     const official = await this.rest.officialOneMinute(end);
     const trades = [...this.buffer.values()].filter((x) => x.timestamp >= end - MINUTE && x.timestamp < end);
     const candle: CanonicalCandle = this.builder.finalize(end, Date.now(), this.previousClose, official);
-    if (this.mode === 'WRITE') {
+    if (this.mode === 'WRITE' || this.mode === 'NEW_LIVE_EPOCH') {
       this.beforeWrite?.();
       const nextCount = this.candles + 1;
       const anomaly = this.builder.orderingViolations > 0 || this.builder.lateCount > 0;

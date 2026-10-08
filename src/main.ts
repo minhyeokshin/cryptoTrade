@@ -13,21 +13,31 @@ import { ProducerLease } from './db/producer-lease.js';
 import { MarketRepository } from './db/repositories/market.js';
 import { randomUUID } from 'node:crypto';
 import { verifyProducerDbPreflight } from './db/producer-preflight.js';
+import { approvedStartupMode, loadNewEpochApproval } from './market/new-live-epoch-approval.js';
 
 assertFrozenEnvironment(process.env);
 const role = process.env.RUNTIME_ROLE ?? 'api';
 if (role === 'producer') {
   const mode = process.env.NODE_MARKET_PRODUCER_MODE ?? 'DRY_RUN';
-  if (mode === 'WRITE') {
+  if (mode === 'WRITE' || mode === 'NEW_LIVE_EPOCH') {
     assertProducerCutover();
+    const approval = mode === 'NEW_LIVE_EPOCH' ? loadNewEpochApproval() : null;
     const pool = poolForRole('bybit_producer');
     let lease: ProducerLease | null = null;
     try {
       await verifyProducerDbPreflight(pool);
       lease = await ProducerLease.acquire(pool);
-      await lease.startEpoch(randomUUID(), '0.1.0');
-      const market = new MarketRuntime('WRITE', new MarketRepository(pool, lease),
-        undefined, undefined, assertProducerCutover);
+      const repository = new MarketRepository(pool, lease);
+      const used = approval ? await repository.newEpochApprovalUsed(approval.approval_id) : false;
+      const epochId = randomUUID();
+      await lease.startEpoch(epochId, '0.1.0');
+      const effectiveMode = approval ? approvedStartupMode(used) : 'WRITE';
+      const market = new MarketRuntime(effectiveMode, repository,
+        undefined, undefined, () => { assertProducerCutover(); if (approval) loadNewEpochApproval(); },
+        approval && !used ? { expectedGapStart: Date.parse(approval.expected_gap_start),
+          record: (gapStart, firstVerified, minuteStart) =>
+            lease!.recordNewLiveBoundary(approval.approval_id, epochId, gapStart,
+              firstVerified, minuteStart) } : undefined);
       await market.start();
       const shutdown = () => {
         market.stop();

@@ -5,6 +5,20 @@ import type { ProducerLease } from '../producer-lease.js';
 
 export class MarketRepository {
   constructor(private readonly pool: pg.Pool, private readonly lease?: ProducerLease) {}
+  async historicalGapStart(): Promise<number> {
+    const result = await (this.lease?.client ?? this.pool).query<{ ms: string }>(
+      `SELECT (extract(epoch FROM exchange_timestamp)*1000)::bigint::text AS ms
+         FROM bybit_live.bybit_live_trades ORDER BY exchange_timestamp DESC LIMIT 1`);
+    const ms = Number(result.rows[0]?.ms);
+    if (!Number.isSafeInteger(ms)) throw new Error('Canonical historical gap start unavailable');
+    return ms;
+  }
+  async newEpochApprovalUsed(approvalId: string): Promise<boolean> {
+    const result = await (this.lease?.client ?? this.pool).query(
+      `SELECT 1 FROM bybit_live.node_live_epoch_boundaries WHERE approval_id=$1::uuid LIMIT 1`,
+      [approvalId]);
+    return result.rowCount === 1;
+  }
   async recoveryTail(): Promise<{ lastCandleEnd: number; previousClose: string;
     lastTrade: CanonicalTrade; anchorTimestampTrades: CanonicalTrade[];
     unfinalizedTrades: CanonicalTrade[] }> {

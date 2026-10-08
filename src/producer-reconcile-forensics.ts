@@ -18,10 +18,21 @@ try {
   const tail = await new MarketRepository(pool).recoveryTail();
   ws.start();
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, 20_000);
-    ws.once('error', (error: Error) => { clearTimeout(timeout); reject(error); });
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      ws.off('connected', check); ws.off('subscribed', check); ws.off('trade', check);
+      ws.off('disconnected', disconnected); ws.off('error', failed);
+      if (error) reject(error); else resolve();
+    };
+    const check = () => { if (ws.connected && ws.subscribed && buffered.size > 0) finish(); };
+    const disconnected = () => finish(new Error('Forensic WS disconnected before readiness'));
+    const failed = (error: Error) => finish(error);
+    const timeout = setTimeout(() => finish(new Error('Forensic WS open/subscribe/trade timeout')), 20_000);
+    ws.on('connected', check); ws.on('subscribed', check); ws.on('trade', check);
+    ws.once('disconnected', disconnected); ws.once('error', failed);
+    check();
   });
-  if (!ws.connected || !buffered.size) throw new Error('Read-only forensic WS unavailable');
+  if (!ws.connected || !ws.subscribed || !buffered.size) throw new Error('Read-only forensic WS unavailable');
   const rest = await recentTrades();
   const dbWindow = await pool.query<{ trade_id: string; timestamp_ms: string;
     price: string; size: string; side: string; raw_sequence: string | null }>(

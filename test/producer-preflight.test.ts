@@ -3,7 +3,7 @@ import type pg from 'pg';
 import { verifyProducerDbPreflight } from '../src/db/producer-preflight.js';
 
 const marketTables = ['bybit_live_trades', 'bybit_live_candles_1m',
-  'operational_health_events', 'node_producer_epochs'];
+  'operational_health_events', 'node_producer_epochs', 'node_live_epoch_boundaries'];
 function fakePool(extra: { schema_name: string; table_name: string; can_select: boolean;
   can_insert: boolean; can_update: boolean; can_delete: boolean }[] = []): pg.Pool {
   return { query: async (sql: string) => sql.includes('current_user, session_user')

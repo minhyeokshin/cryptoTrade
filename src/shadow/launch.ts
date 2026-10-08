@@ -144,6 +144,11 @@ export async function launchRestoredShadow(): Promise<void> {
   try {
     lease = await ShadowRunLease.acquire(pool);
     await mailer.verifyConnection();
+    const boundary = await new MarketReadRepository(pool).liveEpochBoundary();
+    const restored = await new ShadowStateStore(pool).restore(config.activationId);
+    if (!restored || restored.state.activationAt <= boundary) {
+      throw new Error('Shadow activation predates verified new live epoch');
+    }
     await runtime.start();
     hourly = new HourlyScheduler(new ShadowSnapshotProvider(
       () => runtime.committedState(), () => runtime.reportSource(),

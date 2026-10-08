@@ -7,19 +7,21 @@ import type { CanonicalTrade } from '../src/types/domain.js';
 
 class FakeWs extends EventEmitter {
   connected = false;
+  subscribed = false;
   lastHeartbeat: number | null = null;
   latestTrade: number | null = null;
   reconnectCount = 0;
   stops = 0;
   start(): void {
     this.connected = true;
+    this.subscribed = true;
     const trade: CanonicalTrade = { id: 'one', timestamp: Date.now(), receivedAt: Date.now(),
       side: 'Buy', price: '100000', size: '1', sequence: 1, source: 'WEBSOCKET' };
     this.latestTrade = trade.timestamp;
     this.emit('connected');
     this.emit('trade', trade);
   }
-  stop(): void { this.stops++; this.connected = false; }
+  stop(): void { this.stops++; this.connected = false; this.subscribed = false; }
 }
 
 describe('market runtime failed startup', () => {
@@ -46,6 +48,7 @@ describe('market runtime failed startup', () => {
     class LiveWs extends FakeWs {
       override start(): void {
         this.connected = true;
+        this.subscribed = true;
         this.latestTrade = now;
         this.emit('connected');
         this.emit('trade', { ...anchor, id: 'current', timestamp: now,
@@ -77,6 +80,7 @@ describe('market runtime failed startup', () => {
     class LiveWs extends FakeWs {
       override start(): void {
         this.connected = true;
+        this.subscribed = true;
         this.emit('trade', { ...anchor, id: 'new', timestamp: now, receivedAt: now,
           sequence: 2, source: 'WEBSOCKET' });
       }
