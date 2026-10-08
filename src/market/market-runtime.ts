@@ -94,6 +94,17 @@ export class MarketRuntime {
         const candidate = byId.get(trade.id);
         return !candidate || !sameTrade(candidate, trade);
       })) throw new Error('Persisted unfinalized trade/REST boundary mismatch');
+      const unfinalizedGroups = new Map<string, CanonicalTrade[]>();
+      for (const trade of tail.unfinalizedTrades) {
+        const key = `${trade.timestamp}:${trade.sequence ?? 'NULL'}`;
+        const group = unfinalizedGroups.get(key) ?? [];
+        group.push(trade);
+        unfinalizedGroups.set(key, group);
+      }
+      if ([...unfinalizedGroups.values()].some((group) => group.length > 1 &&
+          group.some((trade) => !this.buffer.has(trade.id)))) {
+        throw new Error('Unfinalized persisted tied group lacks WS ordering witness');
+      }
       const bridge = reconcileRecent(tail.lastTrade, rest, [...this.buffer.values()],
         tail.anchorTimestampTrades);
       for (const trade of [...tail.unfinalizedTrades, ...bridge.recovered]) {

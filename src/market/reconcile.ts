@@ -11,9 +11,10 @@ export interface Reconciliation {
   latestTimestamp: number;
 }
 
-/** A millisecond is a bucket, not a unique order key. Persisted members of the anchor bucket
- * are verified by ID/payload; only a strictly greater exchange sequence proves a new member
- * happened after the persisted tail. Trade IDs have no lexical ordering semantics. */
+/** A millisecond/sequence pair is a batch, not a trade ordinal. Persisted members of the
+ * anchor millisecond are verified by ID/payload. A multi-trade post-anchor batch can only be
+ * accepted when the uninterrupted resumed WS has observed every member in source order.
+ * REST IDs witness completeness/payload, but its array order and UUIDs are not tie-breakers. */
 export function reconcileRecent(anchor: CanonicalTrade, rest: CanonicalTrade[],
   resumedWs: CanonicalTrade[], persistedAnchorTimestampTrades: CanonicalTrade[] = [anchor]): Reconciliation {
   if (!rest.length || !resumedWs.length) throw new Error('REST/WS data unavailable');
@@ -42,6 +43,11 @@ export function reconcileRecent(anchor: CanonicalTrade, rest: CanonicalTrade[],
     throw new Error('REST window does not cover full anchor millisecond group');
   }
   const wsById = unique(resumedWs, 'resumed WS');
+  for (let index = 1; index < resumedWs.length; index++) {
+    if (resumedWs[index]!.timestamp < resumedWs[index - 1]!.timestamp) {
+      throw new Error('Resumed WS timestamp ordering violation');
+    }
+  }
   const latestRestTimestamp = Math.max(...rest.map((trade) => trade.timestamp));
   for (const trade of wsById.values()) {
     if (trade.timestamp >= anchor.timestamp && trade.timestamp < latestRestTimestamp &&
@@ -63,16 +69,25 @@ export function reconcileRecent(anchor: CanonicalTrade, rest: CanonicalTrade[],
     }
     candidates.push(trade);
   }
-  // Bybit documents that multiple executions may share seq; such a pair cannot order prices.
-  const sequenceKeys = new Set<string>();
+  // Multiple executions can share one cross-sequence, even across WS messages. If REST is the
+  // only witness for any member of such a batch, the intra-batch execution order is unknown.
+  const sequenceGroups = new Map<string, CanonicalTrade[]>();
   for (const trade of candidates) {
     if (trade.sequence === null || !Number.isSafeInteger(trade.sequence))
       throw new Error('Missing or invalid post-anchor exchange sequence');
     const key = `${trade.timestamp}:${trade.sequence}`;
-    if (sequenceKeys.has(key)) throw new Error('Ambiguous post-anchor exchange sequence');
-    sequenceKeys.add(key);
+    const group = sequenceGroups.get(key) ?? [];
+    group.push(trade);
+    sequenceGroups.set(key, group);
   }
-  candidates.sort((a, b) => a.timestamp - b.timestamp || a.sequence! - b.sequence!);
+  for (const group of sequenceGroups.values()) {
+    if (group.length > 1 && group.some((trade) => !wsById.has(trade.id))) {
+      throw new Error('Incomplete same-timestamp/sequence WS ordering witness');
+    }
+  }
+  const wsOrder = new Map(resumedWs.map((trade, index) => [trade.id, index]));
+  candidates.sort((a, b) => a.timestamp - b.timestamp || a.sequence! - b.sequence! ||
+    (wsOrder.get(a.id) ?? 0) - (wsOrder.get(b.id) ?? 0));
   const overlapTrades = candidates.filter((trade) => wsById.has(trade.id));
   if (!overlapTrades.length) throw new Error('No post-anchor REST/WS overlap');
   for (const trade of overlapTrades) {

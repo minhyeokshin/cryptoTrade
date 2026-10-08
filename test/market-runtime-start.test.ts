@@ -97,4 +97,31 @@ describe('market runtime failed startup', () => {
     expect(ws.stops).toBe(1);
     expect(runtime.status()).toMatchObject({ continuity: false, integrityFault: true });
   });
+  it('refuses to reorder a persisted unfinalized same-ms/seq batch that WS did not witness', async () => {
+    const now = Date.now();
+    const end = Math.floor(now / 60_000) * 60_000;
+    const anchor: CanonicalTrade = { id: 'anchor', timestamp: end - 1000,
+      receivedAt: end - 900, side: 'Buy', price: '100000', size: '1', sequence: 1,
+      source: 'REST_RECENT' };
+    const first = { ...anchor, id: 'first', timestamp: end + 1, sequence: 2 };
+    const second = { ...first, id: 'second', price: '100001' };
+    const current = { ...anchor, id: 'one', timestamp: now, receivedAt: now,
+      sequence: 3, source: 'REST_RECENT' as const };
+    class LiveWs extends FakeWs {
+      override start(): void {
+        this.connected = true; this.subscribed = true; this.latestTrade = now;
+        this.emit('connected'); this.emit('trade', { ...current, source: 'WEBSOCKET' });
+      }
+    }
+    const ws = new LiveWs();
+    const repository = { recoveryTail: async () => ({ lastCandleEnd: end,
+      previousClose: '100000', lastTrade: anchor, anchorTimestampTrades: [anchor],
+      unfinalizedTrades: [first, second] }), recordFailure: async () => {} } as MarketRepository;
+    const runtime = new MarketRuntime('WRITE', repository, ws as unknown as BybitPublicWs,
+      { recentTrades: async () => [{ ...anchor, id: 'older', timestamp: anchor.timestamp - 1,
+        sequence: 0 }, anchor, first, second, { ...current, id: 'one' }],
+        officialOneMinute: async () => { throw new Error('must not fetch kline'); } }, () => {});
+    await expect(runtime.start()).rejects.toThrow('Unfinalized persisted tied group');
+    expect(ws.stops).toBe(1);
+  });
 });

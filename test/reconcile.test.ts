@@ -60,10 +60,54 @@ describe('bounded public REST/WS reconnect reconciliation', () => {
     expect(() => reconcileRecent(anchor, [before, anchor, anchor, overlap], [overlap]))
       .toThrow('Duplicate REST trade ID');
     expect(() => reconcileRecent(anchor, [before, anchor, trade('a', 2000, 2),
-      trade('b', 2000, 2), overlap], [overlap])).toThrow('Ambiguous post-anchor');
+      trade('b', 2000, 2), overlap], [overlap])).toThrow('Incomplete same-timestamp/sequence');
   });
   it('rejects a same-timestamp trade ordered before the persisted anchor', () => {
     expect(() => reconcileRecent(anchor, [before, anchor, trade('older', 1000, 0), overlap],
       [overlap])).toThrow('Ambiguous equal-timestamp');
+  });
+  it('accepts distinct IDs in one timestamp/sequence batch only with a full WS ordering witness', () => {
+    const a = trade('a', 2000, 2);
+    const b = { ...trade('b', 2000, 2), price: '101' };
+    const result = reconcileRecent(anchor, [overlap, b, a, anchor, before], [a, b, overlap]);
+    expect(result).toMatchObject({ recovered: [], overlap: 3 });
+  });
+  it('keeps REST batch order out of the tie-break and preserves WS order', () => {
+    const a = trade('a', 2000, 2);
+    const b = { ...trade('b', 2000, 2), price: '101' };
+    const later = trade('later', 2500, 3);
+    const end = trade('end', 3000, 4);
+    const result = reconcileRecent(anchor, [end, b, a, later, anchor, before], [a, b, end]);
+    expect(result.recovered.map((x) => x.id)).toEqual(['later']);
+    expect(result.overlap).toBe(3);
+  });
+  it('fails closed if any member of a tied batch was missed by the resumed WS', () => {
+    const a = trade('a', 2000, 2);
+    const b = { ...trade('b', 2000, 2), price: '101' };
+    expect(() => reconcileRecent(anchor, [before, anchor, a, b, overlap], [a, overlap]))
+      .toThrow('Incomplete same-timestamp/sequence');
+  });
+  it('does not treat an anchor-sharing sequence as a per-trade ordinal', () => {
+    const peer = trade('peer', 1000, 1);
+    expect(() => reconcileRecent(anchor, [before, anchor, peer, overlap], [peer, overlap]))
+      .toThrow('Ambiguous equal-timestamp');
+  });
+  it('rejects payload mismatch within a fully witnessed batch', () => {
+    const a = trade('a', 2000, 2);
+    const b = trade('b', 2000, 2);
+    expect(() => reconcileRecent(anchor, [before, anchor, a, b, overlap],
+      [a, { ...b, size: '2' }, overlap])).toThrow('REST/WS trade mismatch');
+  });
+  it('rejects a WS timestamp regression even if exact IDs overlap REST', () => {
+    const a = trade('a', 2000, 2);
+    expect(() => reconcileRecent(anchor, [before, anchor, a, overlap], [overlap, a]))
+      .toThrow('WS timestamp ordering');
+  });
+  it('idempotently excludes persisted IDs when replayed after a restart', () => {
+    const recovered = trade('new', 2000, 2);
+    const first = reconcileRecent(anchor, [before, anchor, recovered, overlap], [overlap]);
+    expect(first.recovered.map((x) => x.id)).toEqual(['new']);
+    const second = reconcileRecent(recovered, [anchor, recovered, overlap], [overlap]);
+    expect(second.recovered).toEqual([]);
   });
 });

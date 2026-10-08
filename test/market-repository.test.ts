@@ -29,8 +29,11 @@ describe('append-only market persistence', () => {
   it('accepts exact duplicate IDs/candles without mutation', async () => {
     const { pool, statements } = fakePool();
     await new MarketRepository(pool).persist(candle, [trade]);
+    await new MarketRepository(pool).persist(candle, [trade]);
+    await new MarketRepository(pool).persist(candle, [trade]);
     expect(statements.at(-1)).toBe('COMMIT');
     expect(statements.some((s) => /\bUPDATE\b|\bDELETE\b/.test(s))).toBe(false);
+    expect(statements.filter((s) => s.includes('ON CONFLICT (trade_id)'))).toHaveLength(3);
   });
   it('rejects a conflicting existing trade even below binary-float precision', async () => {
     const { pool, statements } = fakePool('100.0000000002');

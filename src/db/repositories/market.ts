@@ -35,13 +35,13 @@ export class MarketRepository {
         side: string; price: string; size: string; sequence: string | null };
       const tail = await client.query<Row>(
         `SELECT ${tradeColumns} FROM bybit_live.bybit_live_trades
-          ORDER BY exchange_timestamp DESC,raw_sequence DESC NULLS LAST,trade_id DESC LIMIT 1`);
+          ORDER BY exchange_timestamp DESC,raw_sequence DESC NULLS LAST LIMIT 1`);
       if (!candle.rows[0] || !tail.rows[0]) throw new Error('Canonical producer tail unavailable');
       const end = Number(candle.rows[0].end_ms);
       const recent = await client.query<Row>(
         `SELECT ${tradeColumns} FROM bybit_live.bybit_live_trades
           WHERE exchange_timestamp >= to_timestamp($1::double precision/1000)
-          ORDER BY exchange_timestamp,raw_sequence NULLS LAST,trade_id LIMIT 1001`, [end]);
+          ORDER BY exchange_timestamp,raw_sequence NULLS LAST LIMIT 1001`, [end]);
       if (recent.rows.length > 1000) throw new Error('Unfinalized canonical tail exceeds bounded recovery');
       const sameTimestamp = await client.query<Row>(
         `SELECT ${tradeColumns} FROM bybit_live.bybit_live_trades
