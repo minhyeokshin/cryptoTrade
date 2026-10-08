@@ -21,7 +21,7 @@ const allowed = [
   },
   {
     schema_name: 'bybit_live',
-    table_name: 'health_events',
+    table_name: 'operational_health_events',
     can_select: true,
     can_insert: false,
     can_update: false,

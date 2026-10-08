@@ -61,19 +61,25 @@ export class MarketReadRepository {
   }
 
   async sourceState(): Promise<{ latestTrade: number | null; latestCandle: number | null;
-    health: string | null }> {
+    latestCandleStatus: string | null; health: string | null; healthAt: number | null }> {
     const [trade, candle, health] = await Promise.all([
       this.pool.query<{ ms: string }>(
         `SELECT (extract(epoch FROM exchange_timestamp)*1000)::bigint::text AS ms
            FROM bybit_live.bybit_live_trades ORDER BY exchange_timestamp DESC LIMIT 1`),
-      this.pool.query<{ ms: string }>(
-        `SELECT (extract(epoch FROM timestamp)*1000)::bigint::text AS ms
+      this.pool.query<{ ms: string; source_status: string }>(
+        `SELECT (extract(epoch FROM timestamp)*1000)::bigint::text AS ms, source_status
            FROM bybit_live.bybit_live_candles_1m ORDER BY timestamp DESC LIMIT 1`),
-      this.pool.query<{ state: string }>(
-        `SELECT state FROM bybit_live.health_events ORDER BY event_id DESC LIMIT 1`),
+      this.pool.query<{ state: string; at_ms: string }>(
+        `SELECT state, (extract(epoch FROM at)*1000)::bigint::text AS at_ms
+           FROM bybit_live.operational_health_events ORDER BY event_id DESC LIMIT 1`),
     ]);
-    return { latestTrade: trade.rows[0] ? Number(trade.rows[0].ms) : null,
+    const state = { latestTrade: trade.rows[0] ? Number(trade.rows[0].ms) : null,
       latestCandle: candle.rows[0] ? Number(candle.rows[0].ms) : null,
-      health: health.rows[0]?.state ?? null };
+      latestCandleStatus: candle.rows[0]?.source_status ?? null,
+      health: health.rows[0]?.state ?? null,
+      healthAt: health.rows[0] ? Number(health.rows[0].at_ms) : null };
+    if ([state.latestTrade, state.latestCandle, state.healthAt].some((value) =>
+      value !== null && !Number.isSafeInteger(value))) throw new Error('Invalid persisted source timestamp');
+    return state;
   }
 }

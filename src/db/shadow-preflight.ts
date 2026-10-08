@@ -12,7 +12,7 @@ type PrivilegeRow = {
 const LIVE_TABLES = [
   'bybit_live_trades',
   'bybit_live_candles_1m',
-  'health_events',
+  'operational_health_events',
 ] as const;
 const JOURNAL = 'node_shadow_journal';
 

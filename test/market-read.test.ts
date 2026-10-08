@@ -33,4 +33,18 @@ describe('dedicated Shadow market reader', () => {
       await expect(new MarketReadRepository(pool).finalizedAfter(0)).rejects.toThrow('Invalid persisted');
     }
   });
+  it('reads the active operational health stream, not the legacy diagnostic health table', async () => {
+    const queries: string[] = [];
+    const pool = { query: async (sql: string) => {
+      queries.push(sql);
+      if (sql.includes('bybit_live_trades')) return { rows: [{ ms: '120000' }] };
+      if (sql.includes('bybit_live_candles_1m')) return { rows: [{ ms: '120000', source_status: 'LIVE_CURRENT_EPOCH' }] };
+      return { rows: [{ state: 'HEALTHY', at_ms: '120100' }] };
+    } } as unknown as pg.Pool;
+    expect(await new MarketReadRepository(pool).sourceState()).toEqual({ latestTrade: 120_000,
+      latestCandle: 120_000, latestCandleStatus: 'LIVE_CURRENT_EPOCH',
+      health: 'HEALTHY', healthAt: 120_100 });
+    expect(queries[2]).toContain('bybit_live.operational_health_events');
+    expect(queries.every((sql) => sql.trim().startsWith('SELECT'))).toBe(true);
+  });
 });
