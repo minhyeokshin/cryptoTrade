@@ -1,0 +1,15 @@
+{
+  "policy": "NODE_CURRENT_LIVE_EPOCH",
+  "approval_status": "PENDING_HUMAN_APPROVAL",
+  "approval_id": "b6514764-b05a-4c9d-a845-9bc458aa9f96",
+  "previous_approval_id": "90c276e6-f9d6-457b-a659-d8e3d254116a",
+  "approved_by_human": false,
+  "approved_at": null,
+  "expected_gap_start": "2026-10-08T07:02:54.737Z",
+  "historical_gap_may_remain_open": true,
+  "new_live_epoch_authorized": false,
+  "forward_shadow_may_start_after_new_epoch_health_pass": false,
+  "actual_orders_allowed": false,
+  "private_api_allowed": false,
+  "notes": "Template only. Operator must verify the DB tail, review both OPEN gaps, and explicitly approve before installing a root-owned runtime marker. Do not edit the previous approval artifact."
+}

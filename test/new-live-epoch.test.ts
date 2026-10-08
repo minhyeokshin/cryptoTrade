@@ -4,6 +4,7 @@ import type { BybitPublicWs } from '../src/market/bybit-ws.js';
 import type { MarketRepository } from '../src/db/repositories/market.js';
 import { MarketRuntime } from '../src/market/market-runtime.js';
 import { verifyCurrentOverlap } from '../src/market/current-overlap.js';
+import { reconcileRecent } from '../src/market/reconcile.js';
 import { approvedStartupMode, validateNewEpochApproval } from '../src/market/new-live-epoch-approval.js';
 import type { CanonicalTrade } from '../src/types/domain.js';
 
@@ -14,7 +15,9 @@ const trade = (id: string, timestamp = now, sequence = 10): CanonicalTrade => ({
   side: 'Buy', source: 'WEBSOCKET',
 });
 const approval = { policy: 'NODE_CURRENT_LIVE_EPOCH',
-  approval_id: '90c276e6-f9d6-457b-a659-d8e3d254116a',
+  approval_id: 'b81884fd-f73c-4477-9940-b92b34dd197e',
+  previous_approval_id: '90c276e6-f9d6-457b-a659-d8e3d254116a',
+  approved_by_human: true, approved_at: '2026-10-08T08:00:00Z',
   expected_gap_start: '2026-10-08T05:55:50.099Z',
   historical_gap_may_remain_open: true, new_live_epoch_authorized: true,
   forward_shadow_may_start_after_new_epoch_health_pass: true,
@@ -42,9 +45,29 @@ describe('explicit current live epoch', () => {
     expect(() => validateNewEpochApproval({ ...approval, new_live_epoch_authorized: false })).toThrow();
     expect(() => validateNewEpochApproval({ ...approval, historical_gap_may_remain_open: false })).toThrow();
     expect(() => validateNewEpochApproval({ ...approval, actual_orders_allowed: true })).toThrow();
+    expect(() => validateNewEpochApproval({ ...approval, approved_by_human: false })).toThrow();
+    expect(() => validateNewEpochApproval({ ...approval, previous_approval_id: approval.approval_id })).toThrow();
+    expect(() => validateNewEpochApproval({ ...approval, approved_at: 'PENDING' })).toThrow();
+    expect(() => validateNewEpochApproval({ ...approval, approved_by_human: false,
+      new_live_epoch_authorized: false })).toThrow();
+    expect(() => validateNewEpochApproval({ ...approval, previous_approval_id: undefined }))
+      .toThrow();
     expect(() => new MarketRuntime('NEW_LIVE_EPOCH', {} as MarketRepository)).toThrow('approval');
     expect(approvedStartupMode(false)).toBe('NEW_LIVE_EPOCH');
     expect(approvedStartupMode(true)).toBe('WRITE');
+  });
+  it('does not confuse the previous OPEN gap with a newly approved gap', () => {
+    expect(validateNewEpochApproval(approval).expected_gap_start).toBe('2026-10-08T05:55:50.099Z');
+    const next = { ...approval, approval_id: 'c647773b-20ca-402c-9d3a-c735d4027bf3',
+      previous_approval_id: approval.approval_id,
+      expected_gap_start: '2026-10-08T07:02:54.737Z' };
+    expect(validateNewEpochApproval(next).approval_id).not.toBe(approval.approval_id);
+    expect(Date.parse(next.expected_gap_start)).toBeGreaterThan(Date.parse(approval.expected_gap_start));
+    expect(() => validateNewEpochApproval({ ...next, approval_id: approval.approval_id })).toThrow();
+    // The failed old-epoch restart must remain a failure. A distinct human approval is
+    // required to create a future-only epoch; the old REST anchor is not inferred away.
+    expect(approvedStartupMode(true)).toBe('WRITE');
+    expect(approvedStartupMode(false)).toBe('NEW_LIVE_EPOCH');
   });
   it('requires exact current REST/WS identity and source ordering', () => {
     expect(verifyCurrentOverlap([trade('a')], [trade('a')]).overlap).toBe(1);
@@ -53,6 +76,13 @@ describe('explicit current live epoch', () => {
     expect(() => verifyCurrentOverlap([trade('a')], [trade('b')])).toThrow('overlap absent');
     expect(() => verifyCurrentOverlap([trade('a')], [trade('a'), trade('a')])).toThrow('Duplicate WS');
     expect(() => verifyCurrentOverlap([trade('a')], [trade('b', now + 1), trade('a')])).toThrow('ordering');
+  });
+  it('keeps old-anchor restart blocked while a separately approved current overlap is valid', () => {
+    const oldAnchor = trade('old-anchor', gap, 1);
+    const current = trade('current', now, 2);
+    expect(() => reconcileRecent(oldAnchor, [current], [current])).toThrow('anchor absent');
+    expect(verifyCurrentOverlap([current], [current])).toMatchObject({ overlap: 1,
+      firstVerified: current });
   });
   it('does not use the old anchor, discards the partial minute, and persists a complete one', async () => {
     vi.useFakeTimers();

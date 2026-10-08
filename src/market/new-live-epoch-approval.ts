@@ -3,6 +3,9 @@ import { readFileSync, statSync } from 'node:fs';
 export const NEW_EPOCH_APPROVAL_PATH = '/etc/cryptoTrade/node_new_live_epoch_approval.json';
 export interface NewEpochApproval {
   approval_id: string;
+  previous_approval_id: string;
+  approved_by_human: true;
+  approved_at: string;
   expected_gap_start: string;
   historical_gap_may_remain_open: true;
   new_live_epoch_authorized: true;
@@ -14,9 +17,16 @@ export interface NewEpochApproval {
 export function validateNewEpochApproval(input: unknown): NewEpochApproval {
   if (!input || typeof input !== 'object') throw new Error('New live epoch approval missing');
   const x = input as Record<string, unknown>;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   if (x.policy !== 'NODE_CURRENT_LIVE_EPOCH' ||
       typeof x.approval_id !== 'string' ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(x.approval_id) ||
+      !uuid.test(x.approval_id) ||
+      typeof x.previous_approval_id !== 'string' ||
+      !uuid.test(x.previous_approval_id) ||
+      x.approval_id === x.previous_approval_id ||
+      x.approved_by_human !== true ||
+      typeof x.approved_at !== 'string' ||
+      !Number.isFinite(Date.parse(x.approved_at)) ||
       typeof x.expected_gap_start !== 'string' ||
       !Number.isFinite(Date.parse(x.expected_gap_start)) ||
       x.historical_gap_may_remain_open !== true ||
