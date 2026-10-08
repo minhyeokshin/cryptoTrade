@@ -36,14 +36,14 @@ export class CandleBuilder {
   lateCount = 0;
   private latestTimestamp = -Infinity;
 
-  ingest(trade: CanonicalTrade): 'ACCEPTED' | 'DUPLICATE' | 'LATE' {
+  ingest(trade: CanonicalTrade, recovered = false): 'ACCEPTED' | 'DUPLICATE' | 'LATE' {
     const old = this.trades.get(trade.id);
     if (old) {
       if (!sameTrade(old, trade)) throw new Error('Conflicting trade ID');
       this.duplicateCount++;
       return 'DUPLICATE';
     }
-    if (trade.timestamp < this.latestTimestamp) this.orderingViolations++;
+    if (!recovered && trade.timestamp < this.latestTimestamp) this.orderingViolations++;
     this.latestTimestamp = Math.max(this.latestTimestamp, trade.timestamp);
     if (this.finalized.has(endLabel(trade.timestamp))) { this.lateCount++; return 'LATE'; }
     this.trades.set(trade.id, trade);
