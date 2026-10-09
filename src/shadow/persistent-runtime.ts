@@ -25,6 +25,7 @@ export interface InferenceRuntime extends CausalPredictor {
 export type ShadowRuntimeStatus = {
   started: boolean;
   faulted: boolean;
+  suspended: boolean;
   sourceFresh: boolean;
   lastCandle: number | null;
   pendingDecision: number | null;
@@ -42,18 +43,20 @@ export class ShadowPersistentRuntime {
   private lastPrediction: FrozenPrediction | null = null;
   private lastMark: number | null = null;
   private lastPublicTrade: number | null = null;
+  private tradeQueue: Promise<void> = Promise.resolve();
   private readonly tradeListener = (trade: CanonicalTrade) => {
     if (!this.observer || this.faulted) return;
-    const price = Number(trade.price);
-    if (!Number.isFinite(price) || price <= 0) {
-      this.fail(new Error('Invalid public execution observation'));
-      return;
-    }
-    this.lastMark = price;
-    this.lastPublicTrade = trade.timestamp;
-    void this.observer
-      .onPublicTrade(trade)
-      .catch((error: unknown) => this.fail(error));
+    // The DB lease check is asynchronous. Serialize callbacks so its latency
+    // cannot reorder the first causal public execution observation.
+    this.tradeQueue = this.tradeQueue.then(async () => {
+      if (!this.observer || this.faulted || this.stopping) return;
+      const price = Number(trade.price);
+      if (!Number.isFinite(price) || price <= 0)
+        throw new Error('Invalid public execution observation');
+      await this.observer.onPublicTrade(trade);
+      this.lastMark = price;
+      this.lastPublicTrade = trade.timestamp;
+    }).catch((error: unknown) => this.fail(error));
   };
 
   constructor(
@@ -65,6 +68,7 @@ export class ShadowPersistentRuntime {
     private readonly model: InferenceRuntime,
     private readonly journal: ShadowJournal,
     private readonly activationId: string,
+    private readonly producerEpochId: string,
     private readonly lotSize: number,
     private readonly verifyRole: () => Promise<void>,
     private readonly onFault: (error: unknown) => void,
@@ -86,6 +90,10 @@ export class ShadowPersistentRuntime {
       const restored = await this.journal.restore(this.activationId);
       if (!restored || restored.activationId !== this.activationId) {
         throw new Error('Verified Shadow activation journal missing');
+      }
+      if (await this.journal.isSuspended(this.activationId) ||
+          await this.journal.hasUnresolvedOpenSuspension()) {
+        throw new Error('Suspended Shadow position/activation requires separate human resolution');
       }
       if (restored.state.processedSignals.length === 0 && this.now() >= restored.state.activationAt) {
         throw new Error('First causal activation decision already passed; new approval/activation required');
@@ -121,6 +129,7 @@ export class ShadowPersistentRuntime {
         predictor,
         coordinator,
         restored.state.activationAt,
+        this.producerEpochId,
         () => this.publicStreamReady(),
         this.now,
       );
@@ -152,6 +161,9 @@ export class ShadowPersistentRuntime {
       if (!this.publicStreamReady())
         throw new Error('Public stream lost reconciliation/freshness');
       return await this.observer.pollOnce();
+    } catch (error) {
+      this.fail(error);
+      throw error;
     } finally {
       this.inTick = false;
     }
@@ -170,8 +182,21 @@ export class ShadowPersistentRuntime {
   private fail(error: unknown): void {
     if (this.faulted || this.stopping) return;
     this.faulted = true;
+    const open = this.coordinator?.snapshot().open ?? null;
     this.stop();
-    this.onFault(error);
+    void this.journal.suspend(this.activationId, this.producerEpochId, open,
+      error instanceof Error ? error.message : String(error))
+      .catch(() => { /* Runtime remains faulted even if DB is unavailable. */ })
+      .finally(() => this.onFault(error));
+  }
+
+  async suspendForShutdown(): Promise<void> {
+    const open = this.coordinator?.snapshot().open ?? null;
+    this.stopping = true;
+    if (open) this.faulted = true;
+    this.stop();
+    if (open) await this.journal.suspend(this.activationId, this.producerEpochId,
+      open, 'Shadow stopped with unresolved open virtual position');
   }
 
   halt(error: unknown): void { this.fail(error); }
@@ -181,6 +206,7 @@ export class ShadowPersistentRuntime {
     return {
       started: this.started,
       faulted: this.faulted || observation?.faulted === true,
+      suspended: this.faulted && (this.coordinator?.snapshot().open ?? null) !== null,
       sourceFresh:
         this.started &&
         !this.faulted &&

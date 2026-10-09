@@ -14,6 +14,7 @@ import { ShadowSnapshotProvider } from '../report/shadow-snapshot.js';
 import { ShadowStateStore } from './state-store.js';
 import { ShadowPersistentRuntime } from './persistent-runtime.js';
 import { ShadowRunLease } from '../db/shadow-run-lease.js';
+import { readShadowOperationalGate, validateShadowOperationalGate } from './operational-gate.js';
 
 export interface ShadowLaunchConfig {
   activationId: string;
@@ -125,47 +126,46 @@ export async function launchRestoredShadow(): Promise<void> {
     modelFile,
   );
   let hourly: HourlyScheduler | null = null;
-  const runtime = new ShadowPersistentRuntime(
-    new MarketRuntime('DRY_RUN'),
-    new MarketReadRepository(pool),
-    model,
-    new ShadowStateStore(pool),
-    config.activationId,
-    config.lotSize,
-    () => verifyShadowDbPreflight(pool),
-    () => {
-      hourly?.stop();
-      process.exitCode = 1;
-      void closeResources().catch(() => {
-        process.exitCode = 1;
-      });
-    },
-  );
+  let runtime: ShadowPersistentRuntime | null = null;
   try {
     lease = await ShadowRunLease.acquire(pool);
     await mailer.verifyConnection();
-    const boundary = await new MarketReadRepository(pool).liveEpochBoundary();
+    const reader = new MarketReadRepository(pool);
+    const boundary = await reader.liveEpochBoundary();
+    const producerEpochId = await reader.liveEpochId();
+    validateShadowOperationalGate(readShadowOperationalGate(), config.activationId,
+      producerEpochId, Date.now());
     const restored = await new ShadowStateStore(pool).restore(config.activationId);
     if (!restored || restored.state.activationAt <= boundary) {
       throw new Error('Shadow activation predates verified new live epoch');
     }
+    runtime = new ShadowPersistentRuntime(
+      new MarketRuntime('DRY_RUN'), reader, model, new ShadowStateStore(pool),
+      config.activationId, producerEpochId, config.lotSize,
+      () => verifyShadowDbPreflight(pool),
+      () => {
+        hourly?.stop();
+        process.exitCode = 1;
+        void closeResources().catch(() => { process.exitCode = 1; });
+      },
+    );
     await runtime.start();
+    const activeRuntime = runtime;
     hourly = new HourlyScheduler(new ShadowSnapshotProvider(
-      () => runtime.committedState(), () => runtime.reportSource(),
-      () => runtime.latestSignal()), mailer, (error) => runtime.halt(error));
+      () => activeRuntime.committedState(), () => activeRuntime.reportSource(),
+      () => activeRuntime.latestSignal()), mailer, (error) => activeRuntime.halt(error));
     hourly.start();
   } catch (error) {
     hourly?.stop();
-    runtime.stop();
+    runtime?.stop();
     await closeResources();
     throw error;
   }
   const shutdown = () => {
     hourly?.stop();
-    runtime.stop();
-    void closeResources().catch(() => {
+    void runtime?.suspendForShutdown().catch(() => {
       process.exitCode = 1;
-    });
+    }).finally(() => closeResources().catch(() => { process.exitCode = 1; }));
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);

@@ -15,7 +15,7 @@ describe('dedicated Shadow market reader', () => {
     } } as unknown as pg.Pool;
     const rows = await new MarketReadRepository(pool).warmupBefore(180_000, 2);
     expect(rows.map((x) => x.end)).toEqual([60_000, 120_000]);
-    expect(queries.every((sql) => sql.trim().startsWith('SELECT'))).toBe(true);
+    expect(queries.every((sql) => /^(SELECT|WITH)\b/.test(sql.trim()))).toBe(true);
   });
   it('rejects malformed persisted OHLC and an excessive cursor range', async () => {
     const pool = { query: async () => ({ rows: [{ ...row(60_000), high: '99' }] }) } as unknown as pg.Pool;
@@ -39,12 +39,19 @@ describe('dedicated Shadow market reader', () => {
       queries.push(sql);
       if (sql.includes('bybit_live_trades')) return { rows: [{ ms: '120000' }] };
       if (sql.includes('bybit_live_candles_1m')) return { rows: [{ ms: '120000', source_status: 'LIVE_CURRENT_EPOCH' }] };
+      if (sql.includes('latest_epoch')) return { rows: [{ epoch_id: 'epoch', boundary_epoch_id: 'epoch',
+        first_complete_minute_start_ms: '60000',
+        heartbeat_ms: '120200', heartbeat_state: 'RUNNING', lease_held: true }] };
       return { rows: [{ state: 'HEALTHY', at_ms: '120100' }] };
     } } as unknown as pg.Pool;
     expect(await new MarketReadRepository(pool).sourceState()).toEqual({ latestTrade: 120_000,
       latestCandle: 120_000, latestCandleStatus: 'LIVE_CURRENT_EPOCH',
-      health: 'HEALTHY', healthAt: 120_100 });
+      health: 'HEALTHY', healthAt: 120_100, producerEpochId: 'epoch', boundaryEpochId: 'epoch',
+      firstCompleteMinuteStartMs: 60_000,
+      heartbeatAt: 120_200, heartbeatState: 'RUNNING', leaseHeld: true });
     expect(queries[2]).toContain('bybit_live.operational_health_events');
-    expect(queries.every((sql) => sql.trim().startsWith('SELECT'))).toBe(true);
+    expect(queries[3]).toContain('bybit_live.node_producer_heartbeats');
+    expect(queries[3]).toContain('pg_catalog.pg_locks');
+    expect(queries.every((sql) => /^(SELECT|WITH)\b/.test(sql.trim()))).toBe(true);
   });
 });

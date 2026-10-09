@@ -6,11 +6,15 @@ import type { ShadowStateStore } from '../src/shadow/state-store.js';
 
 const at = Date.parse('2026-10-08T12:00:00Z');
 const activationId = '11111111-1111-4111-8111-111111111111';
+const epoch = '22222222-2222-4222-8222-222222222222';
 
 function fakeMarket() {
   return {
     sourceState: async () => ({ latestTrade: at - 1_000, latestCandle: at - 60_000,
-      latestCandleStatus: 'HEALTHY', health: 'HEALTHY', healthAt: at - 1_000 }),
+      latestCandleStatus: 'HEALTHY', health: 'HEALTHY', healthAt: at - 1_000,
+      producerEpochId: epoch, boundaryEpochId: epoch, heartbeatAt: at - 1000,
+      firstCompleteMinuteStartMs: at - 120_000,
+      heartbeatState: 'RUNNING', leaseHeld: true }),
     warmupBefore: async () => [{ end: at - 60_000, open: '100000', high: '100000',
       low: '100000', close: '100000', volume: '1', tradeCount: 1,
       firstTradeTimestamp: at - 120_000, lastTradeTimestamp: at - 61_000 }],
@@ -19,9 +23,9 @@ function fakeMarket() {
 
 describe('Shadow journal read-only API', () => {
   it('does not claim live runtime or public WS readiness from a fresh database snapshot', async () => {
-    const journal = { restore: async () => ({ activationId, lastSignalTimestamp: null,
+    const journal = { isSuspended: async () => false, restore: async () => ({ activationId, lastSignalTimestamp: null,
       state: { activationAt: at - 300_000, balanceBtc: 0.001, open: null, closed: [],
-        processedSignals: [], peakEquity: 100, mdd: 0 } }) } as Pick<ShadowStateStore, 'restore'>;
+        processedSignals: [], peakEquity: 100, mdd: 0 } }) } as Pick<ShadowStateStore, 'restore' | 'isSuspended'>;
     const app = makeApp(shadowDbView(fakeMarket(), journal, activationId, () => at));
     try {
       expect((await app.inject('/api/market/status')).json()).toMatchObject({
@@ -41,7 +45,8 @@ describe('Shadow journal read-only API', () => {
 
   it('reports an absent activation without creating one', async () => {
     let reads = 0;
-    const journal = { restore: async () => { reads++; return null; } } as Pick<ShadowStateStore, 'restore'>;
+    const journal = { isSuspended: async () => false,
+      restore: async () => { reads++; return null; } } as Pick<ShadowStateStore, 'restore' | 'isSuspended'>;
     const app = makeApp(shadowDbView(fakeMarket(), journal, activationId, () => at));
     try {
       expect((await app.inject('/api/shadow/status')).json()).toMatchObject({
@@ -55,10 +60,13 @@ describe('Shadow journal read-only API', () => {
     const market = fakeMarket();
     market.sourceState = async () => ({ latestTrade: at - 600_000,
       latestCandle: at - 600_000, latestCandleStatus: 'HEALTHY',
-      health: 'HEALTHY', healthAt: at - 600_000 });
-    const journal = { restore: async () => ({ activationId, lastSignalTimestamp: null,
+      health: 'HEALTHY', healthAt: at - 600_000,
+      producerEpochId: epoch, boundaryEpochId: epoch, heartbeatAt: at - 600_000,
+      firstCompleteMinuteStartMs: at - 120_000,
+      heartbeatState: 'RUNNING', leaseHeld: false });
+    const journal = { isSuspended: async () => false, restore: async () => ({ activationId, lastSignalTimestamp: null,
       state: { activationAt: at - 300_000, balanceBtc: 0.001, open: null, closed: [],
-        processedSignals: [], peakEquity: 100, mdd: 0 } }) } as Pick<ShadowStateStore, 'restore'>;
+        processedSignals: [], peakEquity: 100, mdd: 0 } }) } as Pick<ShadowStateStore, 'restore' | 'isSuspended'>;
     const app = makeApp(shadowDbView(market, journal, activationId, () => at));
     try {
       expect((await app.inject('/api/shadow/status')).json()).toMatchObject({
@@ -67,6 +75,24 @@ describe('Shadow journal read-only API', () => {
       });
       expect((await app.inject('/api/shadow/metrics')).json()).toMatchObject({
         status: 'SOURCE_STALE', currentEquity: null, winRate: null,
+      });
+    } finally { await app.close(); }
+  });
+
+  it('shows a suspended open position without marking or settling its fault interval', async () => {
+    const journal = { isSuspended: async () => true,
+      restore: async () => ({ activationId, lastSignalTimestamp: at - 60_000,
+        state: { activationAt: at - 300_000, balanceBtc: 0.001,
+          open: { side: 'LONG', signalTimestamp: at - 60_000 }, closed: [],
+          processedSignals: [], peakEquity: 100, mdd: 0 } }) } as unknown as
+      Pick<ShadowStateStore, 'restore' | 'isSuspended'>;
+    const app = makeApp(shadowDbView(fakeMarket(), journal, activationId, () => at));
+    try {
+      expect((await app.inject('/api/shadow/status')).json()).toMatchObject({
+        positionStatus: 'SUSPENDED', equity: null, forwardShadowStarted: false,
+      });
+      expect((await app.inject('/api/shadow/metrics')).json()).toMatchObject({
+        status: 'SUSPENDED', currentEquity: null, netPnl: null,
       });
     } finally { await app.close(); }
   });

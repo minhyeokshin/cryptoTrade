@@ -6,9 +6,13 @@ import { ShadowEngine, type ShadowState } from '../src/shadow/shadow-engine.js';
 import type { ShadowJournal } from '../src/shadow/shadow-coordinator.js';
 import type { CanonicalCandle } from '../src/types/domain.js';
 
-const decision = 720_000_000;
+const decision = 780_000_000;
 const activationAt = decision;
 const activationId = '00000000-0000-4000-8000-000000000001';
+const epoch = '00000000-0000-4000-8000-000000000002';
+const suspension = { isSuspended: async () => false,
+  hasUnresolvedOpenSuspension: async () => false,
+  suspend: async () => {} };
 const candle = (end: number): CanonicalCandle => ({
   end,
   open: '100',
@@ -32,6 +36,7 @@ describe('restore-only Shadow persistent runtime', () => {
     let modelStarts = 0;
     let roleChecks = 0;
     const journal: ShadowJournal = {
+      ...suspension,
       restore: async () => ({
         activationId,
         state: structuredClone(committed),
@@ -52,6 +57,9 @@ describe('restore-only Shadow persistent runtime', () => {
         latestCandleStatus: 'HEALTHY',
         health: 'HEALTHY',
         healthAt: decision - 5000,
+        producerEpochId: epoch, boundaryEpochId: epoch,
+        firstCompleteMinuteStartMs: decision - 12_000 * 60_000,
+        heartbeatAt: clock - 100, heartbeatState: 'RUNNING', leaseHeld: true,
       }),
       warmupBefore: async (_cutoff: number, limit: number) =>
         limit === 1
@@ -95,6 +103,7 @@ describe('restore-only Shadow persistent runtime', () => {
         model,
         journal,
         activationId,
+        epoch,
         1,
         async () => {
           roleChecks++;
@@ -157,6 +166,7 @@ describe('restore-only Shadow persistent runtime', () => {
       },
     };
     const absent: ShadowJournal = {
+      ...suspension,
       restore: async () => null,
       persistTransition: async () => {
         throw new Error('unreachable');
@@ -168,6 +178,7 @@ describe('restore-only Shadow persistent runtime', () => {
       model,
       absent,
       activationId,
+      epoch,
       1,
       async () => {},
       () => {},
@@ -187,11 +198,70 @@ describe('restore-only Shadow persistent runtime', () => {
         warmupBefore: async () => [], finalizedAfter: async () => [] },
       { start: async () => { throw new Error('must not load model'); }, stop: () => {},
         predict: async () => { throw new Error('must not infer'); } },
-      { restore: async () => ({ activationId, lastSignalTimestamp: null,
+      { ...suspension, restore: async () => ({ activationId, lastSignalTimestamp: null,
           state: new ShadowEngine(activationAt, 100, 1).state }),
         persistTransition: async () => { throw new Error('must not write'); } },
-      activationId, 1, async () => {}, () => {}, () => activationAt + 1000);
+      activationId, epoch, 1, async () => {}, () => {}, () => activationAt + 1000);
     await expect(runtime.start(0)).rejects.toThrow('activation decision already passed');
     expect(marketStarts).toBe(0);
+  });
+
+  it('suspends an open virtual position on a candle gap without settling PnL', async () => {
+    const initial = new ShadowEngine(decision - 300_000, 100, 1);
+    const prediction = { decisionTimestamp: decision, featureCutoff: decision,
+      side: 'LONG' as const, confidence: 0.6, actionable: true, flipActionable: true,
+      modelHash: FROZEN.directionModelHash, featureSchemaHash: FROZEN.featureSchemaHash };
+    expect(initial.consume(prediction, decision + 1000, 100, 100, true).entry).not.toBeNull();
+    let clock = decision + 20_000;
+    let latest = decision;
+    let suspension: ShadowState['open'] | undefined;
+    let transitions = 0;
+    const runtime = new ShadowPersistentRuntime(
+      { ws: new EventEmitter(), start: async () => {}, stop: () => {},
+        status: () => ({ sourceFresh: true, integrityFault: false }) },
+      { sourceState: async () => ({ latestTrade: clock - 100, latestCandle: latest,
+          latestCandleStatus: 'LIVE_CURRENT_EPOCH', health: 'HEALTHY', healthAt: clock - 100,
+          producerEpochId: epoch, boundaryEpochId: epoch, heartbeatAt: clock - 100,
+          firstCompleteMinuteStartMs: decision - 12_000 * 60_000,
+          heartbeatState: 'RUNNING', leaseHeld: true }),
+        warmupBefore: async (_cutoff: number, limit: number) => limit === 1 ? [candle(latest)] :
+          Array.from({ length: 11_999 }, (_, i) => candle(latest - (11_998 - i) * 60_000)),
+        finalizedAfter: async () => [candle(decision + 120_000)] },
+      { start: async () => {}, stop: () => {}, predict: async () => {
+        throw new Error('gap must not infer'); } },
+      { restore: async () => ({ activationId, lastSignalTimestamp: decision,
+          state: structuredClone(initial.state) }),
+        persistTransition: async () => { transitions++; return 'COMMITTED' as const; },
+        isSuspended: async () => false, hasUnresolvedOpenSuspension: async () => false,
+        suspend: async (_id, _epoch, open) => { suspension = open; } },
+      activationId, epoch, 1, async () => {}, () => {}, () => clock);
+    await runtime.start(0);
+    latest = decision + 120_000;
+    clock = decision + 121_000;
+    await expect(runtime.pollOnce()).rejects.toThrow('Missing/duplicate finalized candle');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.status()).toMatchObject({ faulted: true, suspended: true, started: false });
+    expect(suspension).toMatchObject({ side: 'LONG', signalTimestamp: decision });
+    expect(transitions).toBe(0);
+    expect(runtime.committedState()?.closed).toHaveLength(0);
+  });
+
+  it('blocks automatic resume of a suspended activation before loading the model', async () => {
+    let modelStarts = 0;
+    const runtime = new ShadowPersistentRuntime(
+      { ws: new EventEmitter(), start: async () => {}, stop: () => {},
+        status: () => ({ sourceFresh: true, integrityFault: false }) },
+      { sourceState: async () => { throw new Error('must not read'); },
+        warmupBefore: async () => [], finalizedAfter: async () => [] },
+      { start: async () => { modelStarts++; }, stop: () => {},
+        predict: async () => { throw new Error('must not infer'); } },
+      { restore: async () => ({ activationId, lastSignalTimestamp: null,
+          state: new ShadowEngine(decision + 300_000, 100, 1).state }),
+        persistTransition: async () => { throw new Error('must not write'); },
+        isSuspended: async () => true, hasUnresolvedOpenSuspension: async () => false,
+        suspend: async () => {} },
+      activationId, epoch, 1, async () => {}, () => {}, () => decision);
+    await expect(runtime.start(0)).rejects.toThrow('requires separate human resolution');
+    expect(modelStarts).toBe(0);
   });
 });

@@ -39,7 +39,22 @@ if (role === 'producer') {
             lease!.recordNewLiveBoundary(approval.approval_id, epochId, gapStart,
               firstVerified, minuteStart) } : undefined);
       await market.start();
+      const beat = async () => {
+        const status = market.status();
+        await lease!.heartbeat(status.integrityFault ? 'FAILED' :
+          status.sourceFresh ? 'RUNNING' : 'DEGRADED');
+      };
+      await beat();
+      const heartbeatTimer = setInterval(() => {
+        void beat().catch(() => {
+          clearInterval(heartbeatTimer);
+          market.stop();
+          process.exitCode = 1;
+          void lease!.release().then(() => pool.end()).catch(() => { process.exitCode = 1; });
+        });
+      }, 1000);
       const shutdown = () => {
+        clearInterval(heartbeatTimer);
         market.stop();
         void lease!.release().then(() => pool.end()).catch(() => { process.exitCode = 1; });
       };

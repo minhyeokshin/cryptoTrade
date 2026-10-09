@@ -14,8 +14,10 @@ const LIVE_TABLES = [
   'bybit_live_candles_1m',
   'operational_health_events',
   'node_producer_epochs',
+  'node_live_epoch_boundaries',
+  'node_producer_heartbeats',
 ] as const;
-const SHADOW_TABLES = ['node_shadow_journal', 'node_hourly_reports'] as const;
+const SHADOW_TABLES = ['node_shadow_journal', 'node_hourly_reports', 'node_shadow_suspensions'] as const;
 
 /** Read-only catalog audit. Never SET ROLE: the connection must already be the peer-auth Shadow role. */
 export async function verifyShadowDbPreflight(pool: pg.Pool): Promise<void> {

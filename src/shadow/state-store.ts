@@ -111,6 +111,38 @@ function validateRow(row: JournalRow): ShadowState {
 export class ShadowStateStore {
   constructor(private readonly pool: pg.Pool) {}
 
+  async isSuspended(activationId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `SELECT 1 FROM shadow_trading_v1.node_shadow_suspensions
+        WHERE activation_id=$1::uuid LIMIT 1`, [activationId]);
+    return result.rowCount === 1;
+  }
+
+  async hasUnresolvedOpenSuspension(): Promise<boolean> {
+    const result = await this.pool.query(
+      `SELECT 1 FROM shadow_trading_v1.node_shadow_suspensions
+        WHERE open_position IS NOT NULL
+       UNION ALL
+       SELECT 1 FROM (
+         SELECT DISTINCT ON (activation_id) state_snapshot
+           FROM shadow_trading_v1.node_shadow_journal
+          ORDER BY activation_id,id DESC
+       ) latest WHERE latest.state_snapshot->'open' <> 'null'::jsonb
+       LIMIT 1`);
+    return result.rowCount === 1;
+  }
+
+  async suspend(activationId: string, producerEpochId: string,
+    openPosition: Position | null, reason: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO shadow_trading_v1.node_shadow_suspensions
+         (activation_id,producer_epoch_id,open_position,reason)
+       VALUES ($1::uuid,$2::uuid,$3::jsonb,$4)
+       ON CONFLICT (activation_id) DO NOTHING`,
+      [activationId, producerEpochId, openPosition ? JSON.stringify(openPosition) : null,
+        reason.slice(0, 300)]);
+  }
+
   async restore(activationId: string): Promise<RestoredShadow | null> {
     const result = await this.pool.query<JournalRow>(
       `SELECT id::text, activation_id::text, idempotency_key, event_type,

@@ -7,6 +7,7 @@ const LOCK_OBJECT = 1001;
 /** Holds the writer lock on the same PostgreSQL session used for all canonical writes. */
 export class ProducerLease {
   private released = false;
+  private epochId: string | null = null;
   private constructor(readonly client: pg.PoolClient) {}
 
   static async acquire(pool: pg.Pool): Promise<ProducerLease> {
@@ -41,7 +42,16 @@ export class ProducerLease {
         `INSERT INTO bybit_live.operational_health_events (state,reason)
          VALUES ('STARTING',$1)`, [`cryptoTrade-node epoch ${epochId}`]);
       await this.client.query('COMMIT');
+      this.epochId = epochId;
     } catch (error) { await this.client.query('ROLLBACK'); throw error; }
+  }
+
+  /** Heartbeat is emitted by the actual advisory-lock-owning DB session. */
+  async heartbeat(state: 'RUNNING' | 'DEGRADED' | 'FAILED'): Promise<void> {
+    if (this.released || !this.epochId) throw new Error('Producer lease/epoch unavailable');
+    await this.client.query(
+      `INSERT INTO bybit_live.node_producer_heartbeats(epoch_id,backend_pid,state)
+       VALUES ($1::uuid,pg_backend_pid(),$2)`, [this.epochId, state]);
   }
 
   async recordNewLiveBoundary(approvalId: string, epochId: string, gapStart: number,

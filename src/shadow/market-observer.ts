@@ -2,15 +2,23 @@ import type { MarketReadRepository } from '../db/repositories/market-read.js';
 import type { CanonicalTrade } from '../types/domain.js';
 import { CausalShadowDriver, type CausalPredictor, type CausalShadowSink } from './causal-driver.js';
 import type { ProcessOutcome } from './shadow-coordinator.js';
+import { assertPostEpochWarmup } from './epoch-boundary.js';
 
 const MINUTE = 60_000;
 const MAX_SOURCE_LAG = 180_000;
+const MAX_PRODUCER_HEARTBEAT_LAG = 3_000;
 const WARMUP = 11_999;
 type SourceState = Awaited<ReturnType<MarketReadRepository['sourceState']>>;
 
 /** Freshness is necessary but not sufficient: the public stream must also be reconciled. */
-export function sourceSnapshotFresh(state: SourceState, now: number): boolean {
+export function sourceSnapshotFresh(state: SourceState, now: number, expectedEpochId: string): boolean {
   return state.health === 'HEALTHY' &&
+    state.producerEpochId === expectedEpochId && state.boundaryEpochId === expectedEpochId &&
+    state.firstCompleteMinuteStartMs !== null && state.latestCandle !== null &&
+    state.latestCandle > state.firstCompleteMinuteStartMs &&
+    state.heartbeatState === 'RUNNING' && state.leaseHeld &&
+    state.heartbeatAt !== null && state.heartbeatAt <= now &&
+    now - state.heartbeatAt < MAX_PRODUCER_HEARTBEAT_LAG &&
     (state.latestCandleStatus === 'HEALTHY' || state.latestCandleStatus === 'LIVE_CURRENT_EPOCH') &&
     state.latestTrade !== null && state.latestCandle !== null && state.healthAt !== null &&
     state.healthAt <= now && state.latestTrade <= now && state.latestCandle < now &&
@@ -28,26 +36,28 @@ export class ShadowMarketObserver {
               private readonly predictor: CausalPredictor,
               private readonly sink: CausalShadowSink,
               private readonly activationAt: number,
+              private readonly producerEpochId: string,
               private readonly publicStreamReady: () => boolean,
               private readonly now: () => number = Date.now) {}
 
   private fresh(): boolean {
     return !this.faulted && this.publicStreamReady() && this.sourceState !== null &&
-      sourceSnapshotFresh(this.sourceState, this.now());
+      sourceSnapshotFresh(this.sourceState, this.now(), this.producerEpochId);
   }
 
   async start(): Promise<void> {
     if (this.driver || this.faulted) throw new Error('Shadow observer already started/faulted');
     const started = this.now();
     const state = await this.market.sourceState();
-    if (!this.publicStreamReady() || !sourceSnapshotFresh(state, started)) {
+    if (!this.publicStreamReady() || !sourceSnapshotFresh(state, started, this.producerEpochId)) {
       throw new Error('Shadow source not freshly reconciled');
     }
     if (state.latestCandle! >= started) throw new Error('Latest candle is not finalized before start');
     const warmup = await this.market.warmupBefore(started, WARMUP);
-    if (warmup.length !== WARMUP || warmup.at(-1)?.end !== state.latestCandle) {
+    if (warmup.at(-1)?.end !== state.latestCandle) {
       throw new Error('Complete current-epoch frozen warmup unavailable');
     }
+    assertPostEpochWarmup(warmup, state.firstCompleteMinuteStartMs!, WARMUP);
     const driver = new CausalShadowDriver(this.activationAt, started, this.predictor, this.sink,
       () => this.fresh(), this.now);
     driver.seedWarmup(warmup);
@@ -76,7 +86,11 @@ export class ShadowMarketObserver {
   }
 
   async onPublicTrade(trade: CanonicalTrade): Promise<ProcessOutcome | null> {
-    if (!this.driver || !this.fresh() || trade.source !== 'WEBSOCKET') return null;
+    if (!this.driver || this.faulted || trade.source !== 'WEBSOCKET') return null;
+    // Recheck the actual producer lease on the execution observation, not only
+    // on the previous 1-second candle poll. A cached HEALTHY event is insufficient.
+    this.sourceState = await this.market.sourceState();
+    if (!this.fresh()) { this.faulted = true; throw new Error('Producer lease/epoch lost before public execution'); }
     return this.driver.onPublicTrade(trade, Number(trade.price));
   }
 

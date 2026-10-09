@@ -38,6 +38,15 @@ const columns = `
 export class MarketReadRepository {
   constructor(private readonly pool: pg.Pool) {}
 
+  async liveEpochId(): Promise<string> {
+    const result = await this.pool.query<{ epoch_id: string }>(
+      `SELECT epoch_id::text FROM bybit_live.node_live_epoch_boundaries
+        ORDER BY recorded_at DESC,approval_id DESC LIMIT 1`);
+    const epochId = result.rows[0]?.epoch_id;
+    if (!epochId) throw new Error('Verified live producer epoch unavailable');
+    return epochId;
+  }
+
   async liveEpochBoundary(): Promise<number> {
     const result = await this.pool.query<{ ms: string }>(
       `SELECT (extract(epoch FROM first_complete_minute_start)*1000)::bigint::text AS ms
@@ -70,8 +79,11 @@ export class MarketReadRepository {
   }
 
   async sourceState(): Promise<{ latestTrade: number | null; latestCandle: number | null;
-    latestCandleStatus: string | null; health: string | null; healthAt: number | null }> {
-    const [trade, candle, health] = await Promise.all([
+    latestCandleStatus: string | null; health: string | null; healthAt: number | null;
+    producerEpochId: string | null; boundaryEpochId: string | null;
+    firstCompleteMinuteStartMs: number | null;
+    heartbeatAt: number | null; heartbeatState: string | null; leaseHeld: boolean }> {
+    const [trade, candle, health, producer] = await Promise.all([
       this.pool.query<{ ms: string }>(
         `SELECT (extract(epoch FROM exchange_timestamp)*1000)::bigint::text AS ms
            FROM bybit_live.bybit_live_trades ORDER BY exchange_timestamp DESC LIMIT 1`),
@@ -81,13 +93,46 @@ export class MarketReadRepository {
       this.pool.query<{ state: string; at_ms: string }>(
         `SELECT state, (extract(epoch FROM at)*1000)::bigint::text AS at_ms
            FROM bybit_live.operational_health_events ORDER BY event_id DESC LIMIT 1`),
+      this.pool.query<{ epoch_id: string; boundary_epoch_id: string | null;
+        first_complete_minute_start_ms: string | null;
+        heartbeat_ms: string | null; heartbeat_state: string | null; lease_held: boolean }>(
+        `WITH latest_epoch AS (
+           SELECT epoch_id FROM bybit_live.node_producer_epochs
+            ORDER BY epoch_start DESC,epoch_id DESC LIMIT 1
+         ), latest_boundary AS (
+           SELECT epoch_id,first_complete_minute_start FROM bybit_live.node_live_epoch_boundaries
+            ORDER BY recorded_at DESC,approval_id DESC LIMIT 1
+         )
+         SELECT e.epoch_id::text, b.epoch_id::text AS boundary_epoch_id,
+           (extract(epoch FROM b.first_complete_minute_start)*1000)::bigint::text
+             AS first_complete_minute_start_ms,
+           (extract(epoch FROM h.at)*1000)::bigint::text AS heartbeat_ms,
+           h.state AS heartbeat_state,
+           EXISTS (SELECT 1 FROM pg_catalog.pg_locks l
+             WHERE l.locktype='advisory' AND l.classid=73142::oid
+               AND l.objid=1001::oid AND l.objsubid=2 AND l.granted
+               AND l.pid=h.backend_pid) AS lease_held
+           FROM latest_epoch e
+           LEFT JOIN latest_boundary b ON true
+           LEFT JOIN LATERAL (
+             SELECT at,state,backend_pid FROM bybit_live.node_producer_heartbeats
+              WHERE epoch_id=e.epoch_id ORDER BY id DESC LIMIT 1
+           ) h ON true`),
     ]);
     const state = { latestTrade: trade.rows[0] ? Number(trade.rows[0].ms) : null,
       latestCandle: candle.rows[0] ? Number(candle.rows[0].ms) : null,
       latestCandleStatus: candle.rows[0]?.source_status ?? null,
       health: health.rows[0]?.state ?? null,
-      healthAt: health.rows[0] ? Number(health.rows[0].at_ms) : null };
-    if ([state.latestTrade, state.latestCandle, state.healthAt].some((value) =>
+      healthAt: health.rows[0] ? Number(health.rows[0].at_ms) : null,
+      producerEpochId: producer.rows[0]?.epoch_id ?? null,
+      boundaryEpochId: producer.rows[0]?.boundary_epoch_id ?? null,
+      firstCompleteMinuteStartMs: producer.rows[0]?.first_complete_minute_start_ms ?
+        Number(producer.rows[0].first_complete_minute_start_ms) : null,
+      heartbeatAt: producer.rows[0]?.heartbeat_ms ? Number(producer.rows[0].heartbeat_ms) : null,
+      heartbeatState: producer.rows[0]?.heartbeat_state ?? null,
+      leaseHeld: producer.rows[0]?.lease_held === true };
+    if ([state.latestTrade, state.latestCandle, state.healthAt, state.heartbeatAt,
+      state.firstCompleteMinuteStartMs].some((value) =>
       value !== null && !Number.isSafeInteger(value))) throw new Error('Invalid persisted source timestamp');
     return state;
   }

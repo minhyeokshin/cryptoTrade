@@ -6,6 +6,10 @@ export interface ShadowJournal {
   restore(activationId: string): Promise<RestoredShadow | null>;
   persistTransition(activationId: string, signalId: string, signalTimestamp: number,
                     state: ShadowState): Promise<'COMMITTED' | 'DUPLICATE'>;
+  isSuspended(activationId: string): Promise<boolean>;
+  hasUnresolvedOpenSuspension(): Promise<boolean>;
+  suspend(activationId: string, producerEpochId: string,
+          openPosition: ShadowState['open'], reason: string): Promise<void>;
 }
 
 export type ProcessOutcome = { status: string; entry: boolean; exit: boolean };
