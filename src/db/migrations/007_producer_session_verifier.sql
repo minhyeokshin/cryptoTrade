@@ -10,8 +10,10 @@ BEGIN
 END
 $$;
 
--- No PID or key arguments: callers can only ask whether this application's
--- latest Producer session owns its one fixed writer lock. No session details
+-- No PID or key arguments: callers can only ask whether the latest approved
+-- live boundary's Producer session owns its one fixed writer lock. Failed
+-- restart epoch rows remain append-only evidence, never the active boundary.
+-- No session details
 -- are returned. The owner can see producer backend_start without granting
 -- pg_read_all_stats to bybit_shadow or any other application role.
 CREATE FUNCTION bybit_live.producer_writer_session_verified()
@@ -24,12 +26,9 @@ SET search_path = pg_catalog, pg_temp
 AS $function$
   SELECT session_user::text = 'bybit_shadow' AND EXISTS (
     SELECT 1
-      FROM (SELECT epoch_id FROM bybit_live.node_producer_epochs
-             ORDER BY epoch_start DESC, epoch_id DESC LIMIT 1) e
-      JOIN LATERAL (
-        SELECT epoch_id FROM bybit_live.node_live_epoch_boundaries
-         ORDER BY recorded_at DESC, approval_id DESC LIMIT 1
-      ) b ON b.epoch_id = e.epoch_id
+      FROM (SELECT epoch_id FROM bybit_live.node_live_epoch_boundaries
+             ORDER BY recorded_at DESC, approval_id DESC LIMIT 1) b
+      JOIN bybit_live.node_producer_epochs e ON e.epoch_id = b.epoch_id
       JOIN LATERAL (
         SELECT backend_pid, backend_start, state, at
           FROM bybit_live.node_producer_heartbeats

@@ -28,6 +28,10 @@ describe('Migration 007 least-privilege session verifier contract', () => {
       "h.state = 'RUNNING'",
       "interval '3 seconds'",
     ]) expect(sql).toContain(predicate);
+    expect(sql).toContain('FROM (SELECT epoch_id FROM bybit_live.node_live_epoch_boundaries');
+    expect(sql).toContain('JOIN bybit_live.node_producer_epochs e ON e.epoch_id = b.epoch_id');
+    expect(sql).toContain('WHERE epoch_id = e.epoch_id ORDER BY id DESC LIMIT 1');
+    expect(sql).not.toContain('ORDER BY epoch_start DESC');
   });
 
   it('fixes search_path and revokes PUBLIC before commit without broad stats grants', () => {

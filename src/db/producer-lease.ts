@@ -28,7 +28,7 @@ export class ProducerLease {
   }
 
   async startEpoch(epochId: string, version: string): Promise<void> {
-    if (this.released || !/^[0-9a-f-]{36}$/i.test(epochId) || !version) {
+    if (this.released || this.epochId || !/^[0-9a-f-]{36}$/i.test(epochId) || !version) {
       throw new Error('Invalid Node producer epoch');
     }
     try {
@@ -44,6 +44,23 @@ export class ProducerLease {
       await this.client.query('COMMIT');
       this.epochId = epochId;
     } catch (error) { await this.client.query('ROLLBACK'); throw error; }
+  }
+
+  /** A restart resumes only the latest approved live boundary, never a failed attempt row. */
+  async resumeApprovedEpoch(expectedApprovalId?: string): Promise<string> {
+    if (this.released || this.epochId) throw new Error('Producer lease already released or bound');
+    const result = await this.client.query<{ epoch_id: string; approval_id: string }>(
+      `SELECT b.epoch_id::text,b.approval_id::text
+         FROM bybit_live.node_live_epoch_boundaries b
+         JOIN bybit_live.node_producer_epochs e ON e.epoch_id=b.epoch_id
+        ORDER BY b.recorded_at DESC,b.approval_id DESC LIMIT 1`);
+    const boundary = result.rows[0];
+    if (result.rows.length !== 1 || !boundary ||
+        (expectedApprovalId && boundary.approval_id !== expectedApprovalId)) {
+      throw new Error('Latest approved Producer boundary unavailable or approval mismatch');
+    }
+    this.epochId = boundary.epoch_id;
+    return boundary.epoch_id;
   }
 
   /** Heartbeat is emitted by the actual advisory-lock-owning DB session. */
@@ -67,7 +84,7 @@ export class ProducerLease {
 
   async recordNewLiveBoundary(approvalId: string, epochId: string, gapStart: number,
     firstVerified: { id: string; timestamp: number }, completeMinuteStart: number): Promise<void> {
-    if (this.released || !Number.isSafeInteger(gapStart) ||
+    if (this.released || this.epochId !== epochId || !Number.isSafeInteger(gapStart) ||
         !Number.isSafeInteger(firstVerified.timestamp) ||
         firstVerified.timestamp <= gapStart ||
         !Number.isSafeInteger(completeMinuteStart) || completeMinuteStart % 60_000 !== 0 ||

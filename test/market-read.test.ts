@@ -7,6 +7,19 @@ const row = (end: number) => ({ end_ms: String(end), open: '100.0', high: '101.0
   first_ms: String(end - 10_000), last_ms: String(end - 10_000) });
 
 describe('dedicated Shadow market reader', () => {
+  it('selects the same approved boundary order for epoch and activation cutoff', async () => {
+    const queries: string[] = [];
+    const pool = { query: async (sql: string) => {
+      queries.push(sql);
+      return sql.includes('first_complete_minute_start') ? { rows: [{ ms: '60000' }] } :
+        { rows: [{ epoch_id: 'approved-epoch' }] };
+    } } as unknown as pg.Pool;
+    const reader = new MarketReadRepository(pool);
+    expect(await reader.liveEpochId()).toBe('approved-epoch');
+    expect(await reader.liveEpochBoundary()).toBe(60_000);
+    expect(queries).toHaveLength(2);
+    expect(queries.every((sql) => sql.includes('ORDER BY recorded_at DESC,approval_id DESC LIMIT 1'))).toBe(true);
+  });
   it('returns chronological warmup without any write query', async () => {
     const queries: string[] = [];
     const pool = { query: async (sql: string) => {
@@ -39,7 +52,7 @@ describe('dedicated Shadow market reader', () => {
       queries.push(sql);
       if (sql.includes('bybit_live_trades')) return { rows: [{ ms: '120000' }] };
       if (sql.includes('bybit_live_candles_1m')) return { rows: [{ ms: '120000', source_status: 'LIVE_CURRENT_EPOCH' }] };
-      if (sql.includes('latest_epoch')) return { rows: [{ epoch_id: 'epoch', boundary_epoch_id: 'epoch',
+      if (sql.includes('latest_boundary')) return { rows: [{ epoch_id: 'epoch', boundary_epoch_id: 'epoch',
         first_complete_minute_start_ms: '60000',
         heartbeat_ms: '120200', heartbeat_state: 'RUNNING', lease_held: true }] };
       return { rows: [{ state: 'HEALTHY', at_ms: '120100' }] };
@@ -52,6 +65,8 @@ describe('dedicated Shadow market reader', () => {
     expect(queries[2]).toContain('bybit_live.operational_health_events');
     expect(queries[3]).toContain('bybit_live.node_producer_heartbeats');
     expect(queries[3]).toContain('bybit_live.producer_writer_session_verified() AS lease_held');
+    expect(queries[3]).toContain('WHERE epoch_id=b.epoch_id');
+    expect(queries[3]).not.toContain('latest_epoch AS');
     expect(queries[3]).not.toContain('pg_catalog.pg_stat_activity');
     expect(queries.every((sql) => /^(SELECT|WITH)\b/.test(sql.trim()))).toBe(true);
   });
@@ -61,7 +76,7 @@ describe('dedicated Shadow market reader', () => {
       const pool = { query: async (sql: string) => {
         if (sql.includes('bybit_live_trades')) return { rows: [{ ms: '120000' }] };
         if (sql.includes('bybit_live_candles_1m')) return { rows: [{ ms: '120000', source_status: 'LIVE_CURRENT_EPOCH' }] };
-        if (sql.includes('latest_epoch')) return { rows: [{ epoch_id: 'epoch', boundary_epoch_id: 'epoch',
+        if (sql.includes('latest_boundary')) return { rows: [{ epoch_id: 'epoch', boundary_epoch_id: 'epoch',
           first_complete_minute_start_ms: '60000', heartbeat_ms: '120200',
           heartbeat_state: 'RUNNING', lease_held: leaseHeld }] };
         return { rows: [{ state: 'HEALTHY', at_ms: '120100' }] };
@@ -72,9 +87,9 @@ describe('dedicated Shadow market reader', () => {
 
   it('propagates a failed lock/session catalog read instead of treating it as healthy', async () => {
     const pool = { query: async (sql: string) => {
-      if (sql.includes('latest_epoch')) throw new Error('pg_stat_activity unavailable');
+      if (sql.includes('latest_boundary')) throw new Error('session verifier unavailable');
       return { rows: [] };
     } } as unknown as pg.Pool;
-    await expect(new MarketReadRepository(pool).sourceState()).rejects.toThrow('pg_stat_activity unavailable');
+    await expect(new MarketReadRepository(pool).sourceState()).rejects.toThrow('session verifier unavailable');
   });
 });

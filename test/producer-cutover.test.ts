@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type pg from 'pg';
 import { validateCutoverEvidence, type CutoverEvidence } from '../src/market/producer-cutover-guard.js';
 import { ProducerLease } from '../src/db/producer-lease.js';
+import { bindProducerEpoch } from '../src/db/producer-startup.js';
 
 function approved(): CutoverEvidence {
   return { osUser: 'bybit_producer', approvalRootOwned: true,
@@ -85,5 +86,51 @@ describe('single-writer cutover guard', () => {
     ownsLock = false;
     await expect(lease.heartbeat('RUNNING')).rejects.toThrow('no longer owns writer lock');
     await lease.release();
+  });
+
+  it('resumes only the approved boundary after a failed later epoch without inserting a new one', async () => {
+    const boundaryEpoch = 'dff8316a-f21d-4093-9b97-98100e706dee';
+    const approvalId = '10000000-0000-4000-8000-000000000001';
+    const queries: string[] = [];
+    const client = { query: async (sql: string) => {
+      queries.push(sql);
+      if (sql.includes('current_user')) return { rows: [{ current_user: 'bybit_producer',
+        session_user: 'bybit_producer' }] };
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true }] };
+      if (sql.includes('SELECT b.epoch_id')) return { rows: [{ epoch_id: boundaryEpoch,
+        approval_id: approvalId }] };
+      if (sql.includes('node_producer_heartbeats')) return { rowCount: 1 };
+      return { rows: [] };
+    }, release: () => {} };
+    const lease = await ProducerLease.acquire({ connect: async () => client } as unknown as pg.Pool);
+    expect(await bindProducerEpoch(lease, 'WRITE', approvalId)).toBe(boundaryEpoch);
+    await lease.heartbeat('RUNNING');
+    expect(queries.some((sql) => sql.includes('INSERT INTO bybit_live.node_producer_epochs'))).toBe(false);
+    expect(queries.some((sql) => sql.includes('JOIN bybit_live.node_producer_epochs e'))).toBe(true);
+    await lease.release();
+  });
+
+  it('rejects an old approval on restart and creates a row only for a fresh approval', async () => {
+    const latestApproval = '10000000-0000-4000-8000-000000000002';
+    const client = { query: async (sql: string) => {
+      if (sql.includes('current_user')) return { rows: [{ current_user: 'bybit_producer',
+        session_user: 'bybit_producer' }] };
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true }] };
+      if (sql.includes('SELECT b.epoch_id')) return { rows: [{ epoch_id: 'dff8316a-f21d-4093-9b97-98100e706dee',
+        approval_id: latestApproval }] };
+      return { rows: [] };
+    }, release: () => {} };
+    const lease = await ProducerLease.acquire({ connect: async () => client } as unknown as pg.Pool);
+    await expect(bindProducerEpoch(lease, 'WRITE', '10000000-0000-4000-8000-000000000001'))
+      .rejects.toThrow('approval mismatch');
+    await lease.release();
+    let started = 0;
+    const fresh = { startEpoch: async () => { started++; },
+      resumeApprovedEpoch: async () => { throw new Error('must not resume'); } };
+    await expect(bindProducerEpoch(fresh, 'NEW_LIVE_EPOCH')).rejects.toThrow('human approval');
+    expect(await bindProducerEpoch(fresh, 'NEW_LIVE_EPOCH', latestApproval,
+      () => '7ed1eed8-096b-4007-a642-ec4f34271cf1'))
+      .toBe('7ed1eed8-096b-4007-a642-ec4f34271cf1');
+    expect(started).toBe(1);
   });
 });

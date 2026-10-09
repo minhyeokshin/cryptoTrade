@@ -50,7 +50,8 @@ export class MarketReadRepository {
   async liveEpochBoundary(): Promise<number> {
     const result = await this.pool.query<{ ms: string }>(
       `SELECT (extract(epoch FROM first_complete_minute_start)*1000)::bigint::text AS ms
-         FROM bybit_live.node_live_epoch_boundaries ORDER BY recorded_at DESC LIMIT 1`);
+         FROM bybit_live.node_live_epoch_boundaries
+        ORDER BY recorded_at DESC,approval_id DESC LIMIT 1`);
     const ms = Number(result.rows[0]?.ms);
     if (!Number.isSafeInteger(ms) || ms <= 0) throw new Error('Verified new live epoch boundary unavailable');
     return ms;
@@ -93,27 +94,23 @@ export class MarketReadRepository {
       this.pool.query<{ state: string; at_ms: string }>(
         `SELECT state, (extract(epoch FROM at)*1000)::bigint::text AS at_ms
            FROM bybit_live.operational_health_events ORDER BY event_id DESC LIMIT 1`),
-      this.pool.query<{ epoch_id: string; boundary_epoch_id: string | null;
+      this.pool.query<{ epoch_id: string | null; boundary_epoch_id: string | null;
         first_complete_minute_start_ms: string | null;
         heartbeat_ms: string | null; heartbeat_state: string | null; lease_held: boolean }>(
-        `WITH latest_epoch AS (
-           SELECT epoch_id FROM bybit_live.node_producer_epochs
-            ORDER BY epoch_start DESC,epoch_id DESC LIMIT 1
-         ), latest_boundary AS (
+        `WITH latest_boundary AS (
            SELECT epoch_id,first_complete_minute_start FROM bybit_live.node_live_epoch_boundaries
             ORDER BY recorded_at DESC,approval_id DESC LIMIT 1
          )
-         SELECT e.epoch_id::text, b.epoch_id::text AS boundary_epoch_id,
+         SELECT h.epoch_id::text, b.epoch_id::text AS boundary_epoch_id,
            (extract(epoch FROM b.first_complete_minute_start)*1000)::bigint::text
              AS first_complete_minute_start_ms,
            (extract(epoch FROM h.at)*1000)::bigint::text AS heartbeat_ms,
            h.state AS heartbeat_state,
            bybit_live.producer_writer_session_verified() AS lease_held
-           FROM latest_epoch e
-           LEFT JOIN latest_boundary b ON true
+           FROM latest_boundary b
            LEFT JOIN LATERAL (
-             SELECT at,state FROM bybit_live.node_producer_heartbeats
-              WHERE epoch_id=e.epoch_id ORDER BY id DESC LIMIT 1
+             SELECT epoch_id,at,state FROM bybit_live.node_producer_heartbeats
+              WHERE epoch_id=b.epoch_id ORDER BY id DESC LIMIT 1
            ) h ON true`),
     ]);
     const state = { latestTrade: trade.rows[0] ? Number(trade.rows[0].ms) : null,

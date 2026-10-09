@@ -11,7 +11,7 @@ import { userInfo } from 'node:os';
 import { assertProducerCutover } from './market/producer-cutover-guard.js';
 import { ProducerLease } from './db/producer-lease.js';
 import { MarketRepository } from './db/repositories/market.js';
-import { randomUUID } from 'node:crypto';
+import { bindProducerEpoch } from './db/producer-startup.js';
 import { verifyProducerDbPreflight } from './db/producer-preflight.js';
 import { approvedStartupMode, loadNewEpochApproval } from './market/new-live-epoch-approval.js';
 
@@ -29,9 +29,11 @@ if (role === 'producer') {
       lease = await ProducerLease.acquire(pool);
       const repository = new MarketRepository(pool, lease);
       const used = approval ? await repository.newEpochApprovalUsed(approval.approval_id) : false;
-      const epochId = randomUUID();
-      await lease.startEpoch(epochId, '0.1.0');
       const effectiveMode = approval ? approvedStartupMode(used) : 'WRITE';
+      // New human-approved live epoch: append one epoch row before its boundary.
+      // Restart: bind the lock-owning session to the existing approved boundary;
+      // never create a misleading newer epoch row before anchor reconciliation.
+      const epochId = await bindProducerEpoch(lease, effectiveMode, approval?.approval_id);
       const market = new MarketRuntime(effectiveMode, repository,
         undefined, undefined, () => { assertProducerCutover(); if (approval) loadNewEpochApproval(); },
         approval && !used ? { expectedGapStart: Date.parse(approval.expected_gap_start),
