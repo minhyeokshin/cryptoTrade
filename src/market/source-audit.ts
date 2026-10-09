@@ -28,9 +28,11 @@ function sameValues(row: CandleRow, official: CanonicalCandle): boolean {
 export async function auditProducerSource(pool: pg.Pool, now = Date.now(),
   official: (end: number) => Promise<CanonicalCandle> = officialOneMinute): Promise<ProducerSourceAudit> {
   const epochResult = await pool.query<EpochRow>(
-    `SELECT epoch_id::text,
-            (extract(epoch FROM epoch_start)*1000)::bigint::text AS start_ms
-       FROM bybit_live.node_producer_epochs ORDER BY epoch_start DESC LIMIT 1`);
+    `SELECT e.epoch_id::text,
+            (extract(epoch FROM b.first_complete_minute_start)*1000)::bigint::text AS start_ms
+       FROM (SELECT * FROM bybit_live.node_live_epoch_boundaries
+             ORDER BY recorded_at DESC, approval_id DESC LIMIT 1) b
+       JOIN bybit_live.node_producer_epochs e ON e.epoch_id=b.epoch_id`);
   const epoch = epochResult.rows[0];
   if (!epoch) return { epochId: null, latestTradeTimestamp: null, latestCandleTimestamp: null,
     lastThreeConsecutive: false, officialKlineExactMatches: 0, health: null, sourceFresh: false };
@@ -44,7 +46,7 @@ export async function auditProducerSource(pool: pg.Pool, now = Date.now(),
       `SELECT (extract(epoch FROM timestamp)*1000)::bigint::text AS end_ms,
               open::text,high::text,low::text,close::text,volume::text,source_status
          FROM bybit_live.bybit_live_candles_1m
-        WHERE timestamp >= to_timestamp($1::double precision/1000)
+        WHERE timestamp >= to_timestamp($1::double precision/1000) + interval '1 minute'
         ORDER BY timestamp DESC LIMIT 3`, [epoch.start_ms]),
     pool.query<HealthRow>(
       `SELECT state,reason,(extract(epoch FROM at)*1000)::bigint::text AS at_ms

@@ -10,6 +10,7 @@ import { normalizeWsTrade } from '../../dist/market/trade-normalizer.js';
 import { encodeJournalFrame } from '../../dist/market/journal-frame.js';
 import { aggregate } from '../../dist/market/candle-builder.js';
 import { orderReplay } from '../../dist/market/replay-order.js';
+import { verifyJournalSchema } from '../../dist/db/journal-schema-audit.js';
 
 assert.match(process.env.PG_CLUSTER_CONF_ROOT ?? '', /^\/tmp\/pg_virtualenv\.[^/]+\/postgresql$/);
 assert.notEqual(process.env.PGPORT, '5432');
@@ -31,6 +32,14 @@ function batch(connection=randomUUID(), ordinal=1, first=1, names=['z','a']) {
 try {
  const version=await admin.query('SHOW server_version_num');
  assert.ok(Number(version.rows[0].server_version_num)>=160000 && Number(version.rows[0].server_version_num)<170000);
+ await verifyJournalSchema(pool);pass('Migration 008 catalog columns keys and append-only triggers');
+ const catalogClient=await admin.connect();
+ try {
+  await catalogClient.query('BEGIN');
+  await catalogClient.query('ALTER TABLE bybit_live.node_ws_journal_frames DISABLE TRIGGER node_ws_journal_frames_reject_mutation');
+  await assert.rejects(verifyJournalSchema(catalogClient),/append-only trigger/);
+  pass('disabled journal trigger rejected');
+ } finally {await catalogClient.query('ROLLBACK');catalogClient.release();}
  lease=await ProducerLease.acquire(pool);await lease.resumeApprovedEpoch();
  let journal=new WsJournal(lease);
  const trades=batch();

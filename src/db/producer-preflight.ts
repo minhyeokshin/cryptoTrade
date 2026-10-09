@@ -1,4 +1,5 @@
 import type pg from 'pg';
+import { verifyJournalSchema } from './journal-schema-audit.js';
 
 type PrivilegeRow = { schema_name: string; table_name: string; can_select: boolean;
   can_insert: boolean; can_update: boolean; can_delete: boolean };
@@ -38,4 +39,5 @@ export async function verifyProducerDbPreflight(pool: pg.Pool): Promise<void> {
       throw new Error(`Unexpected Producer write privilege: ${row.schema_name}.${row.table_name}`);
     }
   }
+  await verifyJournalSchema(pool);
 }

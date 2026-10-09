@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type pg from 'pg';
 import { verifyProducerDbPreflight } from '../src/db/producer-preflight.js';
+import { journalCatalog } from './journal-catalog-fixture.js';
 
 const marketTables = ['bybit_live_trades', 'bybit_live_candles_1m',
   'operational_health_events', 'node_producer_epochs', 'node_live_epoch_boundaries',
@@ -9,7 +10,7 @@ function fakePool(extra: { schema_name: string; table_name: string; can_select: 
   can_insert: boolean; can_update: boolean; can_delete: boolean }[] = []): pg.Pool {
   return { query: async (sql: string) => sql.includes('current_user, session_user')
     ? { rows: [{ current_user: 'bybit_producer', session_user: 'bybit_producer' }] }
-    : { rows: [...marketTables.map((table_name) => ({ schema_name: 'bybit_live',
+    : { rows: journalCatalog(sql) ?? [...marketTables.map((table_name) => ({ schema_name: 'bybit_live',
       table_name, can_select: true, can_insert: true, can_update: false, can_delete: false })),
       ...extra] } } as unknown as pg.Pool;
 }

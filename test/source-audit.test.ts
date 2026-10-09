@@ -23,6 +23,19 @@ function fakePool(candles = rows, health = 'HEALTHY'): pg.Pool {
 }
 
 describe('Node live-epoch source audit', () => {
+  it('binds to approved boundary instead of a later failed epoch and excludes partial candles', async () => {
+    const queries: string[] = [];
+    const base = fakePool();
+    const pool = { query: async (sql: string, params: unknown[]) => {
+      queries.push(sql);
+      return base.query(sql, params);
+    } } as unknown as pg.Pool;
+    await auditProducerSource(pool, now, official);
+    expect(queries[0]).toContain('node_live_epoch_boundaries');
+    expect(queries[0]).toContain('ORDER BY recorded_at DESC, approval_id DESC');
+    expect(queries[0]).not.toContain('ORDER BY epoch_start');
+    expect(queries.find((sql) => sql.includes('bybit_live_candles_1m'))).toContain("interval '1 minute'");
+  });
   it('requires three consecutive finalized candles with official OHLCV parity', async () => {
     const result = await auditProducerSource(fakePool(), now, official);
     expect(result).toMatchObject({ lastThreeConsecutive: true,

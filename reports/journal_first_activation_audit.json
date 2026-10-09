@@ -1,0 +1,61 @@
+{
+  "base_operating_commit": "3f186c678b18d5338c32ea2c2a58bc659bb0413f",
+  "preflight_008_coverage": "CODE_PASS_ISOLATED_DB_PASS",
+  "previous_scope": "Dedicated session identity and SELECT/INSERT without UPDATE/DELETE, including Journal table; no column, FK, primary key or trigger checks",
+  "added_scope": [
+    "Migration 008 required columns, data types and NOT NULL",
+    "Validated nondeferrable Journal primary key, epoch FK and raw-message composite FK",
+    "Preserved Migration 005 canonical trade witness FK",
+    "Enabled unconditional BEFORE UPDATE/DELETE row reject_mutation triggers on all three WS evidence tables",
+    "Diagnostic CLIs now set default_transaction_read_only=on"
+  ],
+  "limits": "Catalog checks do not prove reject_mutation function body behavior or raw payload integrity of every existing journal row. Runtime replay still verifies payload/hash/coverage/order. Existing migration CHECK/default expressions are exposed by admin SQL for review, not exhaustively compared by preflight. No migration is applied by this audit.",
+  "operating_journal_audit": "NOT_VERIFIED_PEER_AUTH_ADMIN_REQUIRED",
+  "operating_attempt": "Read-only Unix socket connection as bybit_producer refused peer authentication for minhyeok. No alternative role or sudo execution attempted.",
+  "admin_readonly_command": "cd /home/minhyeok/app/cryptoTrade && sudo -u bybit_producer env PGOPTIONS='-c default_transaction_read_only=on' psql -X -w -h /var/run/postgresql -U bybit_producer -d btc_analysis < scripts/journal-first-readonly-audit.sql",
+  "source_audit_boundary_alignment": "CODE_PASS_NOT_OPERATING_VERIFIED",
+  "source_audit_fix": "Select latest approved Boundary ordered by recorded_at,approval_id, join its Epoch; exclude partial candle by requiring candle END >= first_complete_minute_start + 1 minute. Do not select a later failed attempt Epoch. Preserve all failed attempt records.",
+  "source_audit_limit": "sourceFresh is an OHLCV/freshness diagnostic, NOT permission to start Shadow or proof of a live writer. Health events alone are insufficient; Migration 007 session verifier and heartbeat/lock checks are independent mandatory gates.",
+  "tests": {
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "node": "156/156 PASS",
+    "isolated_postgresql_16": "13/13 PASS"
+  },
+  "services_observed": {
+    "python": "inactive MainPID=0",
+    "node": "failed MainPID=0 Restart=no",
+    "shadow": "inactive MainPID=0"
+  },
+  "new_epoch_runbook": [
+    "This runbook is preparation only. Do not start services or create/approve an Epoch in this task.",
+    "Complete administrator read-only SQL audit. Require exact FKs, enabled reject triggers, SELECT/INSERT-only producer grants (including no TRUNCATE), expected CHECK/defaults, and zero orphan journal references. Treat empty journal as schema-only evidence, not proven replay safety.",
+    "Review and publish these new source changes, then separately build and deploy a commit-bound full dist with stopped-only deployment helper. Current operating 3f186c6 lacks these added checks. Never reuse legacy permission migration. Verify full dist hash and root:bybit_producer metadata before any future activation.",
+    "Run the updated producer-db-preflight as the dedicated peer OS/DB role, read-only. Preserve all old gaps, approval IDs, failed epochs and canonical rows. Latest attempt/boundary mismatch alone is historical evidence, not an instruction to modify rows.",
+    "Obtain separate human approval with a new unused approval ID and exact current DB-tail expectation. No approval is granted or edited by this report. Producer authorization and Shadow authorization remain separate.",
+    "Only after separate activation authorization: confirm Python stopped/disabled/no process, Node stopped, single-writer control and Restart=no. A new Epoch must bind the new approved Boundary; never reuse a failed approval to create another Epoch.",
+    "Prove current REST/WS ID and payload overlap. Journal every complete WS frame atomically before releasing it to canonical processing. Persist only from first complete future minute. Missing raw order evidence must fail closed.",
+    "Require journal frame/raw-message hash and payload coverage/order verification, canonical witnesses linked to committed frames, zero unexpected duplicate/order conflicts, and three consecutive finalized 1m candles with exact official kline parity and advancing fresh trades.",
+    "Independently verify fresh heartbeat (<3s), exact backend_start/PID/database/advisory lock and approved Boundary epoch via Migration 007 under bybit_shadow; never infer session health from old HEALTHY events or source-audit alone.",
+    "Only with separate controlled-restart authorization, record pre/post tails, replay proof and coverage; require no duplicate canonical rows/candles and no lost verified events. REST-only tied groups without complete original evidence remain a hard stop, even if prices match.",
+    "Stop validation and keep Shadow disabled on journal write failure, missing/altered witness, coverage/order ambiguity, boundary mismatch, unhealthy/stale session, kline mismatch or failed replay. No automatic new Epoch, gap closure, synthetic WS witness, arbitrary ordering, approval reuse or canonical repair is permitted.",
+    "Retain RESTART_SAFETY=FAIL and SHADOW_READY=FALSE until separately observed operating restart evidence is reviewed. No Shadow start is authorized by this runbook."
+  ],
+  "v4_rest_only_group": {
+    "timestamp": "2026-10-08T14:25:46.793Z",
+    "sequence": "118907689527",
+    "order_proof": "UNPROVEN_UNCHANGED",
+    "policy": "A_FAIL_CLOSED"
+  },
+  "separate_deployment_required": true,
+  "operating_db_writes": 0,
+  "operating_writer_locks_acquired": 0,
+  "services_started": 0,
+  "new_epochs": 0,
+  "frozen_changes": 0,
+  "actual_orders": 0,
+  "private_api_calls": 0,
+  "restart_safety": "FAIL",
+  "shadow_ready": false
+}
