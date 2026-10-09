@@ -58,7 +58,8 @@ if (role === 'producer') {
       const shutdown = () => {
         clearInterval(heartbeatTimer);
         market.stop();
-        void lease!.release().then(() => pool.end()).catch(() => { process.exitCode = 1; });
+        void market.ws.drainJournal().catch(() => { process.exitCode = 1; })
+          .then(() => lease!.release()).then(() => pool.end()).catch(() => { process.exitCode = 1; });
       };
       process.once('SIGTERM', shutdown);
       process.once('SIGINT', shutdown);

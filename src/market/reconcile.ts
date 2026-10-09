@@ -1,5 +1,6 @@
 import type { CanonicalTrade } from '../types/domain.js';
 import { sameTrade } from './trade-normalizer.js';
+import { witnessedGroup } from './replay-order.js';
 
 const sameIdentityAndSequence = (a: CanonicalTrade, b: CanonicalTrade): boolean =>
   sameTrade(a, b) && (a.sequence === null || b.sequence === null || a.sequence === b.sequence);
@@ -30,7 +31,8 @@ export class ReconciliationEvidenceError extends Error {
  * accepted when the uninterrupted resumed WS has observed every member in source order.
  * REST IDs witness completeness/payload, but its array order and UUIDs are not tie-breakers. */
 export function reconcileRecent(anchor: CanonicalTrade, rest: CanonicalTrade[],
-  resumedWs: CanonicalTrade[], persistedAnchorTimestampTrades: CanonicalTrade[] = [anchor]): Reconciliation {
+  resumedWs: CanonicalTrade[], persistedAnchorTimestampTrades: CanonicalTrade[] = [anchor],
+  journal: CanonicalTrade[] = []): Reconciliation {
   if (!rest.length || !resumedWs.length) throw new Error('REST/WS data unavailable');
   const unique = (source: CanonicalTrade[], label: string): Map<string, CanonicalTrade> => {
     const result = new Map<string, CanonicalTrade>();
@@ -57,6 +59,13 @@ export function reconcileRecent(anchor: CanonicalTrade, rest: CanonicalTrade[],
     throw new Error('REST window does not cover full anchor millisecond group');
   }
   const wsById = unique(resumedWs, 'resumed WS');
+  const journalById = unique(journal, 'journal');
+  for (const trade of journalById.values()) {
+    const observed = byId.get(trade.id) ?? wsById.get(trade.id);
+    if (observed && !sameIdentityAndSequence(observed, trade)) throw new Error('Journal/REST payload mismatch');
+    if (trade.timestamp >= anchor.timestamp && trade.timestamp < Math.max(...rest.map((t) => t.timestamp)) &&
+        !byId.has(trade.id)) throw new Error('Journal trade missing from covered REST interval');
+  }
   for (let index = 1; index < resumedWs.length; index++) {
     if (resumedWs[index]!.timestamp < resumedWs[index - 1]!.timestamp) {
       throw new Error('Resumed WS timestamp ordering violation');
@@ -94,7 +103,14 @@ export function reconcileRecent(anchor: CanonicalTrade, rest: CanonicalTrade[],
     group.push(trade);
     sequenceGroups.set(key, group);
   }
+  const journalRanks = new Map<string, number>();
+  const proven = new Map<string, CanonicalTrade>();
   for (const group of sequenceGroups.values()) {
+    if (group.length > 1 && journal.some((j) => group.some((t) => t.id === j.id))) {
+      const ordered = witnessedGroup(group, [...journal, ...resumedWs]);
+      ordered.forEach((t,i) => { journalRanks.set(t.id,i); proven.set(t.id,t); });
+      continue;
+    }
     if (group.length > 1 && group.some((trade) => !wsById.has(trade.id))) {
       throw new ReconciliationEvidenceError('Incomplete same-timestamp/sequence WS ordering witness', {
         timestamp: group[0]!.timestamp, sequence: group[0]!.sequence!,
@@ -107,13 +123,14 @@ export function reconcileRecent(anchor: CanonicalTrade, rest: CanonicalTrade[],
   }
   const wsOrder = new Map(resumedWs.map((trade, index) => [trade.id, index]));
   candidates.sort((a, b) => a.timestamp - b.timestamp || a.sequence! - b.sequence! ||
-    (wsOrder.get(a.id) ?? 0) - (wsOrder.get(b.id) ?? 0));
+    (journalRanks.get(a.id) ?? wsOrder.get(a.id) ?? 0) - (journalRanks.get(b.id) ?? wsOrder.get(b.id) ?? 0));
   const overlapTrades = candidates.filter((trade) => wsById.has(trade.id));
   if (!overlapTrades.length) throw new Error('No post-anchor REST/WS overlap');
   for (const trade of overlapTrades) {
     if (!sameIdentityAndSequence(trade, wsById.get(trade.id)!)) throw new Error('REST/WS trade mismatch');
   }
-  return { recovered: candidates.filter((trade) => !wsById.has(trade.id)),
+  return { recovered: candidates.filter((trade) => !wsById.has(trade.id)).map((t) =>
+      proven.get(t.id) ?? journalById.get(t.id) ?? t),
     overlap: overlapTrades.length, anchorTimestamp: anchor.timestamp,
     latestTimestamp: latestRestTimestamp };
 }

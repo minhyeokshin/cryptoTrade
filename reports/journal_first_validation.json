@@ -1,0 +1,73 @@
+{
+  "scope": "local implementation and isolated PostgreSQL 16 only",
+  "journal_first_implementation": "CODE_PASS_NOT_DEPLOYED",
+  "journal_commit_before_canonical": "PASS_TESTED",
+  "replay_order_proof": "PASS_FOR_COMPLETE_VERIFIED_WS_GROUPS",
+  "rest_only_tied_group_policy": "FAIL_CLOSED",
+  "migration": {
+    "file": "src/db/migrations/008_node_ws_journal.sql",
+    "production_applied": false,
+    "reuses_005_raw_messages": true,
+    "preserves_005_canonical_witness_foreign_key": true,
+    "journal_witness_storage": "complete ordered JSONB tuples, frame-atomic with original payload/hash",
+    "canonical_write_requires_bound_writer_lease_and_committed_frame": true,
+    "reapplication": "explicitly rejected; DBA deployment ledger/review required",
+    "legacy_witness_backfill": false
+  },
+  "validation": {
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "node_tests": "151/151 PASS",
+    "journal_first_unit_tests": "8/8 PASS",
+    "postgres_integration": "11/11 PASS",
+    "postgres_version": "16.15",
+    "postgres_command": "pg_virtualenv -v 16 bash test/integration/journal-first-pg.sh",
+    "isolated_database": "journal_isolated",
+    "postgres_auth_scope": "ephemeral fixture roles/password, not production peer-auth deployment",
+    "fixture_kline_parity": "PASS",
+    "live_official_kline_parity": "NOT_RUN",
+    "runtime_replay_to_candle_order": "PASS",
+    "canonical_duplicate_rows_in_retries": 0
+  },
+  "fault_injection": [
+    "received frame withheld until commit; stop before completion never publishes it",
+    "backend termination after journal commit, before canonical commit",
+    "canonical transaction failure preserves committed journal",
+    "duplicate frame retry and repeated payload occurrences",
+    "partial frame rejected; journal insertion failure rolls back raw frame",
+    "missing or modified witnesses/hash rejected",
+    "REST-only tied group and incomplete cross-connection witnesses rejected",
+    "journal DB error stops socket; queued later frames not delivered"
+  ],
+  "limits": [
+    "A crash before durable commit can lose a received frame; no false durability claim.",
+    "An entirely unobserved disconnected interval still needs independently provable order; REST-only ties remain blocked.",
+    "Old V4 missing witnesses are not reconstructed or repaired.",
+    "REST anchor/full-bucket and current overlap requirements remain enforced; journal is not permission to skip gaps.",
+    "Replay is bound to the lease epoch, limited to 10000 frames, and fails on incomplete or contradictory source order.",
+    "One complete connected WS witness is required per tied group; partial connections are not concatenated into guessed order.",
+    "Migration 008 and production deployment require separate review; no live soak/restart was performed."
+  ],
+  "transaction_design": {
+    "network_waits_inside_journal_transaction": false,
+    "synchronous_commit": "on",
+    "journal_statement_timeout": "5s",
+    "session_operation_serialization": true,
+    "frame_queue_bound": 1024,
+    "graceful_shutdown": "stop socket, drain accepted journal queue, release writer lease",
+    "skill_guidance": "short transactions and indexed foreign-key access; no production schema changes"
+  },
+  "operational_safety": {
+    "production_db_writes": 0,
+    "production_dist_changed": false,
+    "producer_started": false,
+    "shadow_started": false,
+    "approval_epoch_historical_gap_changed": false,
+    "frozen_model_features_threshold_changed": false,
+    "actual_orders": 0,
+    "private_api_calls": 0
+  },
+  "restart_safety": "FAIL",
+  "shadow_ready": false
+}

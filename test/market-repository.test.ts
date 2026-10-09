@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import type pg from 'pg';
+import type { ProducerLease } from '../src/db/producer-lease.js';
 import { MarketRepository } from '../src/db/repositories/market.js';
 import type { CanonicalCandle, CanonicalTrade } from '../src/types/domain.js';
 
@@ -11,10 +12,20 @@ const candle: CanonicalCandle = { end: 120_000, open: '100', high: '101', low: '
   lastTradeTimestamp: 60_001 };
 
 function fakePool(price = trade.price, inserted = false, failWitness = false): {
-  pool: pg.Pool; statements: string[] } {
+  pool: pg.Pool; statements: string[]; lease: ProducerLease } {
   const statements: string[] = [];
   const client = { release: () => {}, query: async (sql: string) => {
     statements.push(sql);
+    if (sql.includes('node_ws_journal_frames j JOIN')) {
+      const raw = JSON.stringify({ topic: 'publicTrade.BTCUSD', data: [{
+        i: trade.id,T:String(trade.timestamp),seq:trade.sequence,s:'BTCUSD',
+        S:trade.side,p:trade.price,v:trade.size }] });
+      return {rows:[{connection_id:'f14bf07e-a0b7-4105-baa7-92473d9022c2',message_ordinal:'1',
+        received_ms:String(trade.receivedAt),exchange_message_id:null,
+        message_sha256:createHash('sha256').update(raw).digest('hex'),raw_payload:raw,
+        first_receive_order:'1',trade_count:1,min_timestamp:'60001',max_timestamp:'60001',
+        witnesses:[[trade.id,trade.timestamp,trade.sequence,trade.price,trade.size,trade.side,0,1]]}]};
+    }
     if (sql.includes('ON CONFLICT (trade_id)')) return { rowCount: inserted ? 1 : 0, rows: [] };
     if (sql.includes('INSERT INTO bybit_live.node_ws_messages')) return { rowCount: 1, rows: [] };
     if (sql.includes('INSERT INTO bybit_live.node_ws_trade_witnesses')) {
@@ -22,14 +33,16 @@ function fakePool(price = trade.price, inserted = false, failWitness = false): {
       return { rowCount: 1, rows: [] };
     }
     if (sql.includes('FROM bybit_live.bybit_live_trades')) return { rowCount: 1,
-      rows: [{ ts_ms: 60_001, side: 'Buy', price, size: trade.size, source: 'REST_RECENT' }] };
+      rows: [{ ts_ms: 60_001, side: 'Buy', price, size: trade.size, source: 'REST_RECENT', sequence:'1' }] };
     if (sql.includes('ON CONFLICT (timestamp)')) return { rowCount: 0, rows: [] };
     if (sql.includes('FROM bybit_live.bybit_live_candles_1m')) return { rowCount: 1,
       rows: [{ open: '100.0', high: '101.0', low: '100.0', close: '101.0',
         volume: '2.0', trade_count: '1', first_ms: '60001', last_ms: '60001' }] };
     return { rowCount: 0, rows: [] };
   } };
-  return { pool: { connect: async () => client } as unknown as pg.Pool, statements };
+  return { pool: { connect: async () => client } as unknown as pg.Pool, statements,
+    lease: {client,boundEpoch:'11111111-1111-4111-8111-111111111111',
+      withSession: async (operation:()=>Promise<unknown>)=>operation()} as unknown as ProducerLease };
 }
 
 describe('append-only market persistence', () => {
@@ -45,30 +58,30 @@ describe('append-only market persistence', () => {
     rawMessage, exchangeMessageId: null,
   } };
   it('accepts exact duplicate IDs/candles without mutation', async () => {
-    const { pool, statements } = fakePool();
-    await new MarketRepository(pool).persist(candle, [trade]);
-    await new MarketRepository(pool).persist(candle, [trade]);
-    await new MarketRepository(pool).persist(candle, [trade]);
+    const { pool, statements, lease } = fakePool();
+    await new MarketRepository(pool,lease).persist(candle, [trade]);
+    await new MarketRepository(pool,lease).persist(candle, [trade]);
+    await new MarketRepository(pool,lease).persist(candle, [trade]);
     expect(statements.at(-1)).toBe('COMMIT');
     expect(statements.some((s) => /\bUPDATE\b|\bDELETE\b/.test(s))).toBe(false);
     expect(statements.filter((s) => s.includes('ON CONFLICT (trade_id)'))).toHaveLength(3);
   });
   it('rejects a conflicting existing trade even below binary-float precision', async () => {
-    const { pool, statements } = fakePool('100.0000000002');
-    await expect(new MarketRepository(pool).persist(candle, [trade])).rejects.toThrow('Conflicting persisted trade ID');
+    const { pool, statements, lease } = fakePool('100.0000000002');
+    await expect(new MarketRepository(pool,lease).persist(candle, [trade])).rejects.toThrow('Conflicting persisted trade ID');
     expect(statements.at(-1)).toBe('ROLLBACK');
   });
   it('commits operational health in the same append-only candle transaction', async () => {
-    const { pool, statements } = fakePool();
-    await new MarketRepository(pool).persist(candle, [trade], 'HEALTHY');
+    const { pool, statements, lease } = fakePool();
+    await new MarketRepository(pool,lease).persist(candle, [trade], 'HEALTHY');
     expect(statements.some((sql) => sql.includes('INSERT INTO bybit_live.operational_health_events')))
       .toBe(true);
     expect(statements.at(-1)).toBe('COMMIT');
     expect(statements.some((sql) => /\bUPDATE\b|\bDELETE\b/.test(sql))).toBe(false);
   });
   it('atomically commits a new WS trade, raw frame, per-trade order witness and candle', async () => {
-    const { pool, statements } = fakePool(trade.price, true);
-    await new MarketRepository(pool).persist(candle, [wsTrade], 'HEALTHY');
+    const { pool, statements, lease } = fakePool(trade.price, true);
+    await new MarketRepository(pool,lease).persist(candle, [wsTrade], 'HEALTHY');
     expect(statements[0]).toBe('BEGIN');
     expect(statements.some((s) => s.includes('INSERT INTO bybit_live.node_ws_messages'))).toBe(true);
     expect(statements.some((s) => s.includes('INSERT INTO bybit_live.node_ws_trade_witnesses'))).toBe(true);
@@ -76,16 +89,16 @@ describe('append-only market persistence', () => {
     expect(statements.some((s) => /\bUPDATE\b|\bDELETE\b/.test(s))).toBe(false);
   });
   it('rolls back the canonical trade if its WS witness write fails', async () => {
-    const { pool, statements } = fakePool(trade.price, true, true);
-    await expect(new MarketRepository(pool).persist(candle, [wsTrade])).rejects.toThrow('witness write failed');
+    const { pool, statements, lease } = fakePool(trade.price, true, true);
+    await expect(new MarketRepository(pool,lease).persist(candle, [wsTrade])).rejects.toThrow('witness write failed');
     expect(statements.at(-1)).toBe('ROLLBACK');
     expect(statements).not.toContain('COMMIT');
   });
   it('rejects a missing or tampered WS witness before HEALTHY', async () => {
-    const { pool, statements } = fakePool(trade.price, true);
-    await expect(new MarketRepository(pool).persist(candle, [{ ...wsTrade, witness: undefined }],
+    const { pool, statements, lease } = fakePool(trade.price, true);
+    await expect(new MarketRepository(pool,lease).persist(candle, [{ ...wsTrade, witness: undefined }],
       'HEALTHY')).rejects.toThrow('witness missing');
-    await expect(new MarketRepository(pool).persist(candle, [{ ...wsTrade,
+    await expect(new MarketRepository(pool,lease).persist(candle, [{ ...wsTrade,
       witness: { ...wsTrade.witness!, messageHash: '0'.repeat(64) } }],
     'HEALTHY')).rejects.toThrow('metadata/hash');
     expect(statements.filter((s) => s === 'COMMIT')).toHaveLength(0);
@@ -99,5 +112,10 @@ describe('append-only market persistence', () => {
     const pool = { query: async () => { throw new Error('unexpected DB query'); } } as unknown as pg.Pool;
     await expect(new MarketRepository(pool).verifyPersistedWsWitnesses([trade]))
       .resolves.toBeUndefined();
+  });
+  it('never permits canonical writes without the dedicated journal/lease gate', async () => {
+    const {pool,statements}=fakePool();
+    await expect(new MarketRepository(pool).persist(candle,[trade])).rejects.toThrow('writer lease');
+    expect(statements).toHaveLength(0);
   });
 });

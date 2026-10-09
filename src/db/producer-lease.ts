@@ -8,6 +8,20 @@ const LOCK_OBJECT = 1001;
 export class ProducerLease {
   private released = false;
   private epochId: string | null = null;
+  private sessionQueue: Promise<void> = Promise.resolve();
+  get boundEpoch(): string {
+    if (this.released || !this.epochId) throw new Error('Producer lease/epoch unavailable');
+    return this.epochId;
+  }
+  /** pg serializes queries, not multi-query transactions. Serialize whole operations. */
+  withSession<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.sessionQueue.then(() => {
+      if (this.released) throw new Error('Producer session released');
+      return operation();
+    });
+    this.sessionQueue = result.then(() => {}, () => {});
+    return result;
+  }
   private constructor(readonly client: pg.PoolClient) {}
 
   static async acquire(pool: pg.Pool): Promise<ProducerLease> {
@@ -65,6 +79,9 @@ export class ProducerLease {
 
   /** Heartbeat is emitted by the actual advisory-lock-owning DB session. */
   async heartbeat(state: 'RUNNING' | 'DEGRADED' | 'FAILED'): Promise<void> {
+    return this.withSession(() => this.writeHeartbeat(state));
+  }
+  private async writeHeartbeat(state: 'RUNNING' | 'DEGRADED' | 'FAILED'): Promise<void> {
     if (this.released || !this.epochId) throw new Error('Producer lease/epoch unavailable');
     const result = await this.client.query(
       `INSERT INTO bybit_live.node_producer_heartbeats
@@ -84,6 +101,10 @@ export class ProducerLease {
 
   async recordNewLiveBoundary(approvalId: string, epochId: string, gapStart: number,
     firstVerified: { id: string; timestamp: number }, completeMinuteStart: number): Promise<void> {
+    return this.withSession(() => this.writeNewLiveBoundary(approvalId,epochId,gapStart,firstVerified,completeMinuteStart));
+  }
+  private async writeNewLiveBoundary(approvalId: string, epochId: string, gapStart: number,
+    firstVerified: { id: string; timestamp: number }, completeMinuteStart: number): Promise<void> {
     if (this.released || this.epochId !== epochId || !Number.isSafeInteger(gapStart) ||
         !Number.isSafeInteger(firstVerified.timestamp) ||
         firstVerified.timestamp <= gapStart ||
@@ -101,6 +122,8 @@ export class ProducerLease {
   }
 
   async release(): Promise<void> {
+    if (this.released) return;
+    await this.sessionQueue;
     if (this.released) return;
     this.released = true;
     try { await this.client.query('SELECT pg_advisory_unlock($1::integer,$2::integer)',

@@ -7,6 +7,7 @@ import { reconcileRecent } from './reconcile.js';
 import { verifyCurrentOverlap } from './current-overlap.js';
 import { sourceFresh } from './freshness.js';
 import type { MarketRepository } from '../db/repositories/market.js';
+import { orderReplay } from './replay-order.js';
 
 export type ProducerMode = 'DRY_RUN' | 'READ_ONLY' | 'WRITE' | 'NEW_LIVE_EPOCH';
 type PublicRest = { recentTrades: typeof recentTrades; officialOneMinute: typeof officialOneMinute };
@@ -43,6 +44,9 @@ export class MarketRuntime {
     this.ws = ws;
     if ((mode === 'WRITE' || mode === 'NEW_LIVE_EPOCH') && !repository) throw new Error('WRITE requires dedicated market repository');
     if (mode === 'NEW_LIVE_EPOCH' && !newEpoch) throw new Error('Explicit new live epoch approval required');
+    if (mode === 'WRITE' || mode === 'NEW_LIVE_EPOCH') {
+      this.ws.setFrameCommitter((trades) => this.repository!.journalFrame(trades));
+    }
     this.ws.on('trade', (trade: CanonicalTrade) => {
       const old = this.buffer.get(trade.id);
       if (old && !sameTrade(old, trade)) { this.fault('Conflicting trade ID'); return; }
@@ -83,13 +87,15 @@ export class MarketRuntime {
     try {
     this.ws.start();
     const until = Date.now() + 30_000;
-    while ((!this.ws.connected || !this.ws.subscribed || this.buffer.size === 0) && Date.now() < until) await sleep(100);
+    while ((!this.ws.connected || !this.ws.subscribed || this.buffer.size === 0) &&
+      !this.integrityFault && Date.now() < until) await sleep(100);
     if (!this.ws.connected || !this.ws.subscribed || !this.buffer.size) throw new Error('WS-first open/subscribe/trade unavailable');
     const rest = await this.rest.recentTrades();
     const current = verifyCurrentOverlap(rest, [...this.buffer.values()]);
     this.lastOverlap = current.overlap;
     if (this.mode === 'WRITE') {
       const tail = await this.repository!.recoveryTail();
+      const journal = await this.repository!.replayJournal(Math.min(tail.lastTrade.timestamp, tail.lastCandleEnd));
       await this.repository!.verifyPersistedWsWitnesses([
         ...tail.anchorTimestampTrades, ...tail.unfinalizedTrades]);
       const byId = new Map(rest.map((trade) => [trade.id, trade]));
@@ -105,12 +111,17 @@ export class MarketRuntime {
         unfinalizedGroups.set(key, group);
       }
       if ([...unfinalizedGroups.values()].some((group) => group.length > 1 &&
-          group.some((trade) => !this.buffer.has(trade.id)))) {
+          group.some((trade) => !this.buffer.has(trade.id) && !journal.some((j) => j.id === trade.id)))) {
         throw new Error('Unfinalized persisted tied group lacks WS ordering witness');
       }
       const bridge = reconcileRecent(tail.lastTrade, rest, [...this.buffer.values()],
-        tail.anchorTimestampTrades);
-      for (const trade of [...tail.unfinalizedTrades, ...bridge.recovered]) {
+        tail.anchorTimestampTrades, journal);
+      const replay = [...tail.unfinalizedTrades, ...bridge.recovered];
+      const ordered = orderReplay([...replay, ...this.buffer.values()], [...journal, ...this.buffer.values()]);
+      // Rebuild the unfinalized buffer using proved source order, never arrival order of recovery queries.
+      this.builder.resetUnfinalized();
+      this.buffer.clear();
+      for (const trade of ordered.filter((t) => t.timestamp >= tail.lastCandleEnd)) {
         const old = this.buffer.get(trade.id);
         if (old && !sameTrade(old, trade)) throw new Error('Canonical startup trade conflict');
         if (!old) {
@@ -189,8 +200,10 @@ export class MarketRuntime {
       if (this.integrityFault) throw new Error('Integrity fault requires supervised restart');
       const rest = await this.rest.recentTrades();
       if (!this.ws.connected || !this.ws.subscribed || this.builder.lateCount || this.integrityFault) throw new Error('Reconnect interrupted or integrity fault');
+      const journal = this.repository && (this.mode === 'WRITE' || this.mode === 'NEW_LIVE_EPOCH') ?
+        await this.repository.replayJournal(this.disconnectAnchor.timestamp) : [];
       const result = reconcileRecent(this.disconnectAnchor, rest, [...this.resumedWs.values()],
-        this.disconnectAnchorGroup);
+        this.disconnectAnchorGroup, journal);
       for (const trade of result.recovered) {
         const old = this.buffer.get(trade.id);
         if (old && !sameTrade(old, trade)) throw new Error('Recovered trade conflicts with WS');
@@ -199,6 +212,9 @@ export class MarketRuntime {
           if (this.builder.ingest(trade, true) === 'LATE') throw new Error('Recovered trade after candle finalization');
         }
       }
+      const ordered = orderReplay([...this.buffer.values()], [...journal, ...this.buffer.values()]);
+      this.builder.rebuildUnfinalized(ordered);
+      this.buffer.clear(); ordered.forEach((t) => this.buffer.set(t.id,t));
       this.recoveredTrades += result.recovered.length;
       this.lastOverlap = result.overlap;
       this.reconcileAttempts = 0;
@@ -210,12 +226,13 @@ export class MarketRuntime {
     } finally { this.reconciling = false; }
   }
   private async tick(): Promise<void> {
-    if (this.ticking || !this.continuity || !this.ws.connected || this.anchor === null || this.previousClose === null) return;
+    if (this.ticking || this.ws.pendingFrames > 0 || !this.continuity || !this.ws.connected || this.anchor === null || this.previousClose === null) return;
     this.ticking = true;
     try {
     const end = this.anchor + MINUTE;
     if (Date.now() < end + 3000) return;
     const official = await this.rest.officialOneMinute(end);
+    if (this.ws.pendingFrames > 0 || !this.continuity || this.integrityFault) return;
     const trades = [...this.buffer.values()].filter((x) => x.timestamp >= end - MINUTE && x.timestamp < end);
     const candle: CanonicalCandle = this.builder.finalize(end, Date.now(), this.previousClose, official);
     if (this.mode === 'WRITE' || this.mode === 'NEW_LIVE_EPOCH') {

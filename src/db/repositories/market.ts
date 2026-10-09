@@ -3,9 +3,18 @@ import { Decimal } from 'decimal.js';
 import type { CanonicalCandle, CanonicalTrade } from '../../types/domain.js';
 import type { ProducerLease } from '../producer-lease.js';
 import { validateWsWitness } from '../../market/ws-ordering-witness.js';
+import { WsJournal } from './ws-journal.js';
 
 export class MarketRepository {
   constructor(private readonly pool: pg.Pool, private readonly lease?: ProducerLease) {}
+  async journalFrame(trades: CanonicalTrade[]): Promise<void> {
+    if (!this.lease) throw new Error('Journal requires writer lease');
+    await new WsJournal(this.lease).append(trades);
+  }
+  async replayJournal(since: number): Promise<CanonicalTrade[]> {
+    if (!this.lease) throw new Error('Replay requires bound writer lease');
+    return new WsJournal(this.lease).replay(since);
+  }
   async historicalGapStart(): Promise<number> {
     const result = await (this.lease?.client ?? this.pool).query<{ ms: string }>(
       `SELECT (extract(epoch FROM exchange_timestamp)*1000)::bigint::text AS ms
@@ -130,9 +139,15 @@ export class MarketRepository {
   }
   async persist(candle: CanonicalCandle, trades: CanonicalTrade[],
                 health?: 'WARMING' | 'HEALTHY' | 'STALE' | 'DEGRADED'): Promise<void> {
+    if (!this.lease) throw new Error('Canonical writes require writer lease and journal gate');
+    return this.lease.withSession(() => this.persistTransaction(candle, trades, health));
+  }
+  private async persistTransaction(candle: CanonicalCandle, trades: CanonicalTrade[],
+                health?: 'WARMING' | 'HEALTHY' | 'STALE' | 'DEGRADED'): Promise<void> {
     const client = this.lease?.client ?? await this.pool.connect();
     try {
       await client.query('BEGIN');
+      if (this.lease) await WsJournal.requireCommitted(client, trades, this.lease.boundEpoch);
       for (const trade of trades) {
         const witness = trade.source === 'WEBSOCKET' ? validateWsWitness(trade) : null;
         const result = await client.query<{ trade_id: string }>(
@@ -144,13 +159,14 @@ export class MarketRepository {
             trade.sequence, trade.source]);
         if (!result.rowCount) {
           const old = await client.query<{ ts_ms: number; side: string; price: string;
-            size: string; source: string }>(
+            size: string; source: string; sequence: string | null }>(
             `SELECT (extract(epoch FROM exchange_timestamp)*1000)::bigint AS ts_ms,
-                    side,price::text,size::text,source
+                    side,price::text,size::text,source,raw_sequence::text AS sequence
                FROM bybit_live.bybit_live_trades WHERE trade_id=$1`, [trade.id]);
           const row = old.rows[0];
           if (!row || Number(row.ts_ms) !== trade.timestamp || row.side !== trade.side ||
-              !new Decimal(row.price).eq(trade.price) || !new Decimal(row.size).eq(trade.size)) {
+              !new Decimal(row.price).eq(trade.price) || !new Decimal(row.size).eq(trade.size) ||
+              (row.sequence === null ? null : Number(row.sequence)) !== trade.sequence) {
             throw new Error('Conflicting persisted trade ID');
           }
           if (row.source === 'WEBSOCKET') {
@@ -228,8 +244,8 @@ export class MarketRepository {
 
   async recordStartupHealth(state: 'BACKFILLING' | 'FAILED', reason: string): Promise<void> {
     if (!this.lease) return;
-    await this.lease.client.query(
+    await this.lease.withSession(() => this.lease!.client.query(
       `INSERT INTO bybit_live.operational_health_events (state,reason)
-       VALUES ($1,$2)`, [state, `cryptoTrade-node: ${reason.slice(0, 300)}`]);
+       VALUES ($1,$2)`, [state, `cryptoTrade-node: ${reason.slice(0, 300)}`]));
   }
 }

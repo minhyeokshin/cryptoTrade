@@ -35,6 +35,16 @@ export class CandleBuilder {
   orderingViolations = 0;
   lateCount = 0;
   private latestTimestamp = -Infinity;
+  resetUnfinalized(): void {
+    if (this.finalized.size) throw new Error('Cannot rebuild finalized candle history');
+    this.trades.clear(); this.latestTimestamp = -Infinity;
+  }
+  rebuildUnfinalized(trades: CanonicalTrade[]): void {
+    if (trades.some((t) => this.finalized.has(endLabel(t.timestamp))))
+      throw new Error('Replay overlaps finalized candle');
+    this.trades.clear(); this.latestTimestamp = -Infinity;
+    for (const trade of trades) this.ingest(trade, true);
+  }
 
   discardBefore(start: number): void {
     if (!Number.isSafeInteger(start) || start % MINUTE !== 0 || this.finalized.size) {

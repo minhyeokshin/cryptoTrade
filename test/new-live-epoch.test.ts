@@ -25,6 +25,7 @@ const approval = { policy: 'NODE_CURRENT_LIVE_EPOCH',
   actual_orders_allowed: false, private_api_allowed: false };
 
 class FakeWs extends EventEmitter {
+  setFrameCommitter(): void {}
   connected = false;
   subscribed = false;
   latestTrade: number | null = null;

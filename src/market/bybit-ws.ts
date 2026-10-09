@@ -13,6 +13,14 @@ export class BybitPublicWs extends EventEmitter {
   private retry: NodeJS.Timeout | null = null;
   private stopped = false;
   private generation = 0;
+  private frameCommitter: ((trades: CanonicalTrade[]) => Promise<void>) | null = null;
+  private frameQueue: Promise<void> = Promise.resolve();
+  pendingFrames = 0;
+  setFrameCommitter(commit: (trades: CanonicalTrade[]) => Promise<void>): void {
+    if (this.ws || this.frameCommitter) throw new Error('Journal gate must be installed before WS start');
+    this.frameCommitter = commit;
+  }
+  async drainJournal(): Promise<void> { await this.frameQueue; }
   connected = false;
   subscribed = false;
   lastHeartbeat: number | null = null;
@@ -89,8 +97,27 @@ export class BybitPublicWs extends EventEmitter {
               receiveOrder: ++receiveOrder, receivedAt, messageHash, rawMessage,
               exchangeMessageId: message.id ?? null },
           }));
-          for (const trade of trades) { this.latestTrade = trade.timestamp; this.emit('trade', trade); }
-        } catch (error) { this.emit('error', error); }
+          if (!this.frameCommitter) {
+            for (const trade of trades) { this.latestTrade = trade.timestamp; this.emit('trade', trade); }
+          } else {
+            if (++this.pendingFrames > 1024) throw new Error('Journal backlog limit exceeded');
+            this.frameQueue = this.frameQueue.then(async () => {
+              // Frames queued before disconnect are still durable evidence. Stop/failure
+              // never publishes them; a supervised restart may later replay them.
+              await this.frameCommitter!(trades);
+              if (current()) for (const trade of trades) {
+                this.latestTrade = trade.timestamp; this.emit('trade', trade);
+              }
+            });
+            void this.frameQueue.catch((error: unknown) => {
+              this.stop();
+              this.emit('error', error instanceof Error ? error : new Error(String(error)));
+            }).finally(() => { this.pendingFrames--; });
+          }
+        } catch (error) {
+          if (this.frameCommitter) this.stop();
+          this.emit('error', error);
+        }
       } else if (message.topic?.startsWith('kline.')) this.emit('kline', message);
     });
     ws.on('error', (error) => { if (current()) this.emit('error', error); });

@@ -6,6 +6,7 @@ import type { MarketRepository } from '../src/db/repositories/market.js';
 import type { CanonicalTrade } from '../src/types/domain.js';
 
 class FakeWs extends EventEmitter {
+  setFrameCommitter(): void {}
   connected = false;
   subscribed = false;
   lastHeartbeat: number | null = null;
@@ -57,7 +58,7 @@ describe('market runtime failed startup', () => {
     }
     const ws = new LiveWs();
     let startupHealth = '';
-    const repository = { verifyPersistedWsWitnesses: async () => {},
+    const repository = { replayJournal: async () => [], verifyPersistedWsWitnesses: async () => {},
       recoveryTail: async () => ({ lastCandleEnd: end,
       previousClose: '100000', lastTrade: anchor, anchorTimestampTrades: [anchor], unfinalizedTrades: [] }),
       recordStartupHealth: async (_state: string, reason: string) => { startupHealth = reason; } } as MarketRepository;
@@ -87,7 +88,7 @@ describe('market runtime failed startup', () => {
       }
     }
     const ws = new LiveWs();
-    const repository = { verifyPersistedWsWitnesses: async () => {},
+    const repository = { replayJournal: async () => [], verifyPersistedWsWitnesses: async () => {},
       recoveryTail: async () => ({ lastCandleEnd: end,
       previousClose: '100000', lastTrade: anchor, anchorTimestampTrades: [anchor], unfinalizedTrades: [] }),
       recordFailure: async () => {} } as MarketRepository;
@@ -116,7 +117,7 @@ describe('market runtime failed startup', () => {
       }
     }
     const ws = new LiveWs();
-    const repository = { verifyPersistedWsWitnesses: async () => {},
+    const repository = { replayJournal: async () => [], verifyPersistedWsWitnesses: async () => {},
       recoveryTail: async () => ({ lastCandleEnd: end,
       previousClose: '100000', lastTrade: anchor, anchorTimestampTrades: [anchor],
       unfinalizedTrades: [first, second] }), recordFailure: async () => {} } as MarketRepository;
