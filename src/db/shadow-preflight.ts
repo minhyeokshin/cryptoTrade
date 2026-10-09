@@ -8,6 +8,9 @@ type PrivilegeRow = {
   can_update: boolean;
   can_delete: boolean;
 };
+type VerifierRow = { owner_name: string; security_definer: boolean;
+  volatility: string; parallel_safety: string; settings: string[] | null;
+  can_execute: boolean; public_execute: boolean; has_all_stats: boolean };
 
 const LIVE_TABLES = [
   'bybit_live_trades',
@@ -75,5 +78,25 @@ export async function verifyShadowDbPreflight(pool: pg.Pool): Promise<void> {
         `Unexpected Shadow write privilege: ${row.schema_name}.${row.table_name}`,
       );
     }
+  }
+  const verifier = await pool.query<VerifierRow>(`
+    SELECT pg_catalog.pg_get_userbyid(p.proowner)::text AS owner_name,
+           p.prosecdef AS security_definer, p.provolatile AS volatility,
+           p.proparallel AS parallel_safety, p.proconfig AS settings,
+           pg_catalog.has_function_privilege(current_user,p.oid,'EXECUTE') AS can_execute,
+           EXISTS (SELECT 1 FROM pg_catalog.aclexplode(
+             COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) acl
+             WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE') AS public_execute,
+           pg_catalog.pg_has_role(current_user,'pg_read_all_stats','MEMBER') AS has_all_stats
+      FROM pg_catalog.pg_proc p
+      JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+     WHERE n.nspname='bybit_live' AND p.proname='producer_writer_session_verified'
+       AND p.pronargs=0`);
+  const fn = verifier.rows[0];
+  if (verifier.rows.length !== 1 || fn?.owner_name !== 'postgres' ||
+      fn.security_definer !== true || fn.volatility !== 'v' || fn.parallel_safety !== 'u' ||
+      !fn.settings?.includes('search_path=pg_catalog, pg_temp') ||
+      fn.can_execute !== true || fn.public_execute !== false || fn.has_all_stats !== false) {
+    throw new Error('Shadow session verifier privilege/configuration mismatch');
   }
 }

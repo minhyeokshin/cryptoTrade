@@ -51,16 +51,12 @@ describe('dedicated Shadow market reader', () => {
       heartbeatAt: 120_200, heartbeatState: 'RUNNING', leaseHeld: true });
     expect(queries[2]).toContain('bybit_live.operational_health_events');
     expect(queries[3]).toContain('bybit_live.node_producer_heartbeats');
-    expect(queries[3]).toContain('pg_catalog.pg_locks');
-    expect(queries[3]).toContain('l.database=(SELECT oid FROM pg_catalog.pg_database');
-    expect(queries[3]).toContain('a.datid=l.database');
-    expect(queries[3]).toContain('a.pid=h.backend_pid');
-    expect(queries[3]).toContain('a.backend_start=h.backend_start');
-    expect(queries[3]).toContain("a.usename='bybit_producer'");
+    expect(queries[3]).toContain('bybit_live.producer_writer_session_verified() AS lease_held');
+    expect(queries[3]).not.toContain('pg_catalog.pg_stat_activity');
     expect(queries.every((sql) => /^(SELECT|WITH)\b/.test(sql.trim()))).toBe(true);
   });
 
-  it('fails closed when cross-database lock or reused PID does not verify', async () => {
+  it('fails closed when the privileged session verifier rejects the lock evidence', async () => {
     for (const leaseHeld of [false]) {
       const pool = { query: async (sql: string) => {
         if (sql.includes('bybit_live_trades')) return { rows: [{ ms: '120000' }] };

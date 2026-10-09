@@ -64,10 +64,13 @@ function pool(user: string, rows = allowed): pg.Pool {
   return {
     query: async (sql: string) => {
       expect(sql.trim().startsWith('SELECT')).toBe(true);
-      return {
-        rows:
-          ++queries === 1 ? [{ current_user: user, session_user: user }] : rows,
-      };
+      queries++;
+      if (queries === 1) return { rows: [{ current_user: user, session_user: user }] };
+      if (sql.includes('pg_catalog.pg_proc')) return { rows: [{ owner_name: 'postgres',
+        security_definer: true, volatility: 'v', parallel_safety: 'u',
+        settings: ['search_path=pg_catalog, pg_temp'], can_execute: true,
+        public_execute: false, has_all_stats: false }] };
+      return { rows };
     },
   } as unknown as pg.Pool;
 }
@@ -113,5 +116,18 @@ describe('Shadow DB preflight', () => {
     await expect(
       verifyShadowDbPreflight(pool('bybit_shadow', mutation)),
     ).rejects.toThrow('journal/report privilege');
+  });
+  it('rejects a missing or broadly executable session verifier', async () => {
+    const base = pool('bybit_shadow');
+    const missing = { query: async (sql: string) => sql.includes('pg_catalog.pg_proc')
+      ? { rows: [] } : base.query(sql) } as unknown as pg.Pool;
+    await expect(verifyShadowDbPreflight(missing)).rejects.toThrow('session verifier');
+    const broadBase = pool('bybit_shadow');
+    const broad = { query: async (sql: string) => sql.includes('pg_catalog.pg_proc')
+      ? { rows: [{ owner_name: 'postgres', security_definer: true,
+        volatility: 'v', parallel_safety: 'u', settings: ['search_path=pg_catalog, pg_temp'],
+        can_execute: true, public_execute: true, has_all_stats: false }] }
+      : broadBase.query(sql) } as unknown as pg.Pool;
+    await expect(verifyShadowDbPreflight(broad)).rejects.toThrow('session verifier');
   });
 });
