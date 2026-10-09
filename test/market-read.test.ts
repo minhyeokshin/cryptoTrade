@@ -52,6 +52,33 @@ describe('dedicated Shadow market reader', () => {
     expect(queries[2]).toContain('bybit_live.operational_health_events');
     expect(queries[3]).toContain('bybit_live.node_producer_heartbeats');
     expect(queries[3]).toContain('pg_catalog.pg_locks');
+    expect(queries[3]).toContain('l.database=(SELECT oid FROM pg_catalog.pg_database');
+    expect(queries[3]).toContain('a.datid=l.database');
+    expect(queries[3]).toContain('a.pid=h.backend_pid');
+    expect(queries[3]).toContain('a.backend_start=h.backend_start');
+    expect(queries[3]).toContain("a.usename='bybit_producer'");
     expect(queries.every((sql) => /^(SELECT|WITH)\b/.test(sql.trim()))).toBe(true);
+  });
+
+  it('fails closed when cross-database lock or reused PID does not verify', async () => {
+    for (const leaseHeld of [false]) {
+      const pool = { query: async (sql: string) => {
+        if (sql.includes('bybit_live_trades')) return { rows: [{ ms: '120000' }] };
+        if (sql.includes('bybit_live_candles_1m')) return { rows: [{ ms: '120000', source_status: 'LIVE_CURRENT_EPOCH' }] };
+        if (sql.includes('latest_epoch')) return { rows: [{ epoch_id: 'epoch', boundary_epoch_id: 'epoch',
+          first_complete_minute_start_ms: '60000', heartbeat_ms: '120200',
+          heartbeat_state: 'RUNNING', lease_held: leaseHeld }] };
+        return { rows: [{ state: 'HEALTHY', at_ms: '120100' }] };
+      } } as unknown as pg.Pool;
+      expect((await new MarketReadRepository(pool).sourceState()).leaseHeld).toBe(false);
+    }
+  });
+
+  it('propagates a failed lock/session catalog read instead of treating it as healthy', async () => {
+    const pool = { query: async (sql: string) => {
+      if (sql.includes('latest_epoch')) throw new Error('pg_stat_activity unavailable');
+      return { rows: [] };
+    } } as unknown as pg.Pool;
+    await expect(new MarketReadRepository(pool).sourceState()).rejects.toThrow('pg_stat_activity unavailable');
   });
 });

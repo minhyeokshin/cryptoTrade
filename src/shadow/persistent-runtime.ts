@@ -186,8 +186,9 @@ export class ShadowPersistentRuntime {
     this.stop();
     void this.journal.suspend(this.activationId, this.producerEpochId, open,
       error instanceof Error ? error.message : String(error))
-      .catch(() => { /* Runtime remains faulted even if DB is unavailable. */ })
-      .finally(() => this.onFault(error));
+      .then(() => this.onFault(error), (suspensionError: unknown) =>
+        this.onFault(new AggregateError([error, suspensionError],
+          'Shadow fault and durable suspension recording both failed')));
   }
 
   async suspendForShutdown(): Promise<void> {

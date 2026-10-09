@@ -143,7 +143,8 @@ export async function launchRestoredShadow(): Promise<void> {
       new MarketRuntime('DRY_RUN'), reader, model, new ShadowStateStore(pool),
       config.activationId, producerEpochId, config.lotSize,
       () => verifyShadowDbPreflight(pool),
-      () => {
+      (error) => {
+        process.stderr.write(`Shadow runtime fault: ${error instanceof Error ? error.message : 'unknown error'}\n`);
         hourly?.stop();
         process.exitCode = 1;
         void closeResources().catch(() => { process.exitCode = 1; });

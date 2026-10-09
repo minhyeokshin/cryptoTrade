@@ -49,9 +49,20 @@ export class ProducerLease {
   /** Heartbeat is emitted by the actual advisory-lock-owning DB session. */
   async heartbeat(state: 'RUNNING' | 'DEGRADED' | 'FAILED'): Promise<void> {
     if (this.released || !this.epochId) throw new Error('Producer lease/epoch unavailable');
-    await this.client.query(
-      `INSERT INTO bybit_live.node_producer_heartbeats(epoch_id,backend_pid,state)
-       VALUES ($1::uuid,pg_backend_pid(),$2)`, [this.epochId, state]);
+    const result = await this.client.query(
+      `INSERT INTO bybit_live.node_producer_heartbeats
+         (epoch_id,backend_pid,backend_start,state)
+       SELECT $1::uuid,a.pid,a.backend_start,$2
+         FROM pg_catalog.pg_stat_activity a
+        WHERE a.pid=pg_backend_pid()
+          AND a.datid=(SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())
+          AND a.usename='bybit_producer' AND a.backend_start IS NOT NULL
+          AND EXISTS (SELECT 1 FROM pg_catalog.pg_locks l
+            WHERE l.locktype='advisory' AND l.database=a.datid
+              AND l.classid=73142::oid AND l.objid=1001::oid AND l.objsubid=2
+              AND l.mode='ExclusiveLock' AND l.granted AND l.pid=a.pid)
+       RETURNING id`, [this.epochId, state]);
+    if (result.rowCount !== 1) throw new Error('Producer heartbeat session no longer owns writer lock');
   }
 
   async recordNewLiveBoundary(approvalId: string, epochId: string, gapStart: number,

@@ -134,13 +134,23 @@ export class ShadowStateStore {
 
   async suspend(activationId: string, producerEpochId: string,
     openPosition: Position | null, reason: string): Promise<void> {
-    await this.pool.query(
+    const position = openPosition ? JSON.stringify(openPosition) : null;
+    const recordedReason = reason.slice(0, 300);
+    const inserted = await this.pool.query(
       `INSERT INTO shadow_trading_v1.node_shadow_suspensions
          (activation_id,producer_epoch_id,open_position,reason)
        VALUES ($1::uuid,$2::uuid,$3::jsonb,$4)
-       ON CONFLICT (activation_id) DO NOTHING`,
-      [activationId, producerEpochId, openPosition ? JSON.stringify(openPosition) : null,
-        reason.slice(0, 300)]);
+       ON CONFLICT (activation_id) DO NOTHING RETURNING activation_id`,
+      [activationId, producerEpochId, position, recordedReason]);
+    if (inserted.rowCount === 1) return;
+    const existing = await this.pool.query<{ identical: boolean }>(
+      `SELECT (producer_epoch_id=$2::uuid AND
+               open_position IS NOT DISTINCT FROM $3::jsonb AND reason=$4) AS identical
+         FROM shadow_trading_v1.node_shadow_suspensions WHERE activation_id=$1::uuid`,
+      [activationId, producerEpochId, position, recordedReason]);
+    if (existing.rowCount !== 1 || existing.rows[0]?.identical !== true) {
+      throw new Error('Conflicting Shadow suspension for activation');
+    }
   }
 
   async restore(activationId: string): Promise<RestoredShadow | null> {

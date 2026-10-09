@@ -26,6 +26,26 @@ const candle = (end: number): CanonicalCandle => ({
 });
 
 describe('restore-only Shadow persistent runtime', () => {
+  it('reports a failed durable suspension instead of silently swallowing it', async () => {
+    let reported: unknown;
+    const runtime = new ShadowPersistentRuntime(
+      { ws: new EventEmitter(), start: async () => {}, stop: () => {},
+        status: () => ({ sourceFresh: false, integrityFault: true }) },
+      { sourceState: async () => { throw new Error('must not read'); },
+        warmupBefore: async () => [], finalizedAfter: async () => [] },
+      { start: async () => {}, stop: () => {}, predict: async () => {
+        throw new Error('must not infer'); } },
+      { restore: async () => null, persistTransition: async () => 'COMMITTED',
+        isSuspended: async () => false, hasUnresolvedOpenSuspension: async () => false,
+        suspend: async () => { throw new Error('suspension DB unavailable'); } },
+      activationId, epoch, 1, async () => {}, (error) => { reported = error; });
+    runtime.halt(new Error('producer stopped'));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.status().faulted).toBe(true);
+    expect(reported).toBeInstanceOf(AggregateError);
+    expect((reported as Error).message).toContain('durable suspension recording');
+  });
+
   it('does not infer from warmup or replay a signal after restart', async () => {
     let clock = decision - 1000;
     let latest = decision - 60_000;

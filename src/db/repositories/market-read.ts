@@ -109,13 +109,18 @@ export class MarketReadRepository {
            (extract(epoch FROM h.at)*1000)::bigint::text AS heartbeat_ms,
            h.state AS heartbeat_state,
            EXISTS (SELECT 1 FROM pg_catalog.pg_locks l
+             JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid
              WHERE l.locktype='advisory' AND l.classid=73142::oid
-               AND l.objid=1001::oid AND l.objsubid=2 AND l.granted
-               AND l.pid=h.backend_pid) AS lease_held
+               AND l.objid=1001::oid AND l.objsubid=2
+               AND l.mode='ExclusiveLock' AND l.granted
+               AND l.database=(SELECT oid FROM pg_catalog.pg_database
+                 WHERE datname=current_database())
+               AND a.datid=l.database AND a.usename='bybit_producer'
+               AND a.pid=h.backend_pid AND a.backend_start=h.backend_start) AS lease_held
            FROM latest_epoch e
            LEFT JOIN latest_boundary b ON true
            LEFT JOIN LATERAL (
-             SELECT at,state,backend_pid FROM bybit_live.node_producer_heartbeats
+             SELECT at,state,backend_pid,backend_start FROM bybit_live.node_producer_heartbeats
               WHERE epoch_id=e.epoch_id ORDER BY id DESC LIMIT 1
            ) h ON true`),
     ]);
